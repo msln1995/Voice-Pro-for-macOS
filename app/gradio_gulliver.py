@@ -1,6 +1,7 @@
 
 import json
 import asyncio
+import gradio as gr
 
 from src.config import UserConfig
 from app.abus_downloader import *
@@ -256,6 +257,7 @@ class GradioGulliver:
                         source_lang, transcription_text, target_lang):
         if len(transcription_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_translate - no actions")
+            gr.Warning(i18n("No text to process"))
             return None, None, None, self.fm.get_all_files() 
         
         self.user_config.set("translate_source_language", source_lang)            
@@ -343,6 +345,7 @@ class GradioGulliver:
         
         if len(translation_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_edge_dubbing - no actions")
+            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
         self.user_config.set("edge_tts_pitch", semitones)     
@@ -478,6 +481,7 @@ class GradioGulliver:
         
         if len(translation_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_f5_dubbing_single - no actions")
+            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
             
@@ -554,7 +558,8 @@ class GradioGulliver:
                         celeb_name, celeb_audio, celeb_transcript, 
                         mode_choice, speed_factor, audio_format: str):
         if len(translation_text) < 1:
-            logger.warning(f"[gradio_gulliver.py] gradio_f5_dubbing_single - no actions")
+            logger.warning(f"[gradio_gulliver.py] gradio_cosy_dubbing - no actions")
+            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
             
@@ -634,6 +639,7 @@ class GradioGulliver:
         
         if len(translation_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_kokoro_dubbing - no actions")
+            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
         # self.user_config.set("edge_tts_rate", speed_factor)  
