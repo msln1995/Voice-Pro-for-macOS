@@ -6,10 +6,10 @@ from typing import List, Optional
 from lingua import LanguageDetectorBuilder
 
 class AbusSpacy:
-    MAX_MERGE_GAP_MS = 1000
+    MAX_MERGE_GAP_MS = 500
     SENTENCE_ENDINGS = {'.', '!', '?', '。', '！', '？', '…'}
     NON_SPACING_LANGUAGES = {'ja', 'zh', 'th', 'km', 'lo'}
-    MIN_DURATION_MS = 1000
+    MIN_DURATION_MS = 500
     
     _nlp_models = {}
     detector = LanguageDetectorBuilder.from_all_languages().build()
@@ -147,7 +147,11 @@ class AbusSpacy:
     def _process_group(cls, events: List[pysubs2.SSAEvent], lang: str, model_size: str) -> List[pysubs2.SSAEvent]:
         if not events:
             return []
+            
+        original_starts = [e.start for e in events if e.plaintext.strip()]
+        original_ends = [e.end for e in events if e.plaintext.strip()]
         full_text = " ".join(cls.normalize_text(e.plaintext, lang) for e in events if e.plaintext.strip())
+        
         sentences = cls.split_into_sentences(full_text, lang, model_size)
         
         merged_sentences = []
@@ -162,38 +166,33 @@ class AbusSpacy:
         if current:
             merged_sentences.append(current)
         
-        event_starts = [e.start for e in events if e.plaintext.strip()]
-        event_ends = [e.end for e in events if e.plaintext.strip()]
-        total_duration = event_ends[-1] - event_starts[0]
+        total_duration = original_ends[-1] - original_starts[0]
         total_chars = len(full_text)
         
         result = []
-        last_end = event_starts[0]
+        last_end = original_starts[0]
         
         for sent_idx, sent in enumerate(merged_sentences):
             if not cls.is_complete_sentence(sent, lang):
                 sent = cls.complete_sentence(sent, lang)
             
-            sent_start = last_end if sent_idx > 0 else event_starts[0]
+            sent_start = last_end
             sent_duration = max(cls.MIN_DURATION_MS, int(total_duration * len(sent) / total_chars))
             sent_end = sent_start + sent_duration
             
-            for i, (e_start, e_end) in enumerate(zip(event_starts, event_ends)):
-                if sent_start >= e_start and sent_start < e_end:
-                    sent_end = min(sent_end, event_ends[-1])
-                    break
-                elif sent_start < e_start and i > 0:
-                    sent_start = e_start
-                    sent_end = sent_start + sent_duration
-                    break
+            # 边界修正：如果是第一句
+            if sent_idx == 0:
+                sent_start = original_starts[0]
+                sent_end = sent_start + sent_duration
             
-            sent_end = min(sent_end, event_ends[-1])
-            if sent_end - sent_start < cls.MIN_DURATION_MS:
+            # 如果是最后一句
+            if sent_idx == len(merged_sentences) - 1:
+                sent_end = original_ends[-1]
+            
+            # 防止重叠和无效时长
+            if sent_end <= sent_start:
                 sent_end = sent_start + cls.MIN_DURATION_MS
-                if sent_end > event_ends[-1]:
-                    sent_start = event_ends[-1] - cls.MIN_DURATION_MS
-                    sent_end = event_ends[-1]
-            
+                
             result.append(pysubs2.SSAEvent(start=sent_start, end=sent_end, text=sent))
             last_end = sent_end
         
