@@ -35,7 +35,7 @@ def sanitize_filename(filename):
     
     return filename
 
-def shorten_string(title, max_length = 64):
+def shorten_string(title, max_length = 128):
     title = title.strip()
     
     if len(title) > max_length:
@@ -236,7 +236,7 @@ def path_workspace_subfolder(file_path: str):
     formatted_time = path_time_string()
    
     # folder_name = f'[{formatted_time}] {file_name[:36]}-{hash}'
-    shortened_filename = shorten_string(file_name, 32)
+    shortened_filename = shorten_string(file_name, 128)
     folder_name = f'[{formatted_time}] {shortened_filename}'
 
     workspace_folder = path_workspace_folder()
