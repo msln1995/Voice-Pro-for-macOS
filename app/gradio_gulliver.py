@@ -495,11 +495,12 @@ class GradioGulliver:
         aidub_video_file = None
         mixed_audio_file = None                
 
-        if translation_file:
-            aidub_video_file, mixed_audio_file = self._f5_tts_single(self._read_file(translation_file), 
-                                                celeb_name, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
-        elif translation_text:
-            aidub_video_file, mixed_audio_file = self._f5_tts_single(translation_text, 
+        # 注意：infer_single 内部会自动检测字幕格式
+        # 如果是字幕格式，会调用 srt_to_voice 按时间轴生成
+        # 如果是纯文本，会调用 text_to_voice 生成
+        text_to_process = self._read_file(translation_file) if translation_file else translation_text
+        if text_to_process:
+            aidub_video_file, mixed_audio_file = self._f5_tts_single(text_to_process, 
                                                 celeb_name, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
 
         output_video_path = (aidub_video_file, translation_file) if aidub_video_file and translation_file else aidub_video_file
@@ -520,7 +521,9 @@ class GradioGulliver:
                 raise FileNotFoundError(f"Source audio file not found: {source_audio_file}")
                 
             aidub_audio_file = path_add_postfix(source_audio_file, f"_{celeb_name}")                               
-            self.f5_tts.infer_single(text.strip(), aidub_audio_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
+            # 注意：不要对 text 使用 strip()，因为如果是字幕格式，会破坏其结构
+            # infer_single 内部会自动检测格式并处理
+            self.f5_tts.infer_single(text, aidub_audio_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
             
             # Mix
             mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{celeb_name}")            
@@ -573,11 +576,12 @@ class GradioGulliver:
         aidub_video_file = None
         mixed_audio_file = None   
                 
-        if translation_file:
-            aidub_video_file, mixed_audio_file = self._cosy_tts_single(self._read_file(translation_file), 
-                                                celeb_name, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
-        elif translation_text:
-            aidub_video_file, mixed_audio_file = self._cosy_tts_single(translation_text, 
+        # 注意：infer_single 内部会自动检测字幕格式
+        # 如果是字幕格式，会调用 srt_to_voice 按时间轴生成
+        # 如果是纯文本，会调用 text_to_voice 生成
+        text_to_process = self._read_file(translation_file) if translation_file else translation_text
+        if text_to_process:
+            aidub_video_file, mixed_audio_file = self._cosy_tts_single(text_to_process, 
                                                 celeb_name, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
 
         output_video_path = (aidub_video_file, translation_file) if aidub_video_file and translation_file else aidub_video_file
@@ -595,7 +599,9 @@ class GradioGulliver:
             # F5-TTS
             source_audio_file = self.fm.get_split("Source.audio")           
             aidub_audio_file = path_add_postfix(source_audio_file, f"_{celeb_name}")                               
-            self.cosy_tts.infer_single(text.strip(), aidub_audio_file, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
+            # 注意：不要对 text 使用 strip()，因为如果是字幕格式，会破坏其结构
+            # infer_single 内部会自动检测格式并处理
+            self.cosy_tts.infer_single(text, aidub_audio_file, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
             
             # Mix
             mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{celeb_name}")            
