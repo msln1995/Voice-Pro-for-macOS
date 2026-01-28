@@ -1,3 +1,5 @@
+import os
+import json
 import time
 import pysubs2
 import re
