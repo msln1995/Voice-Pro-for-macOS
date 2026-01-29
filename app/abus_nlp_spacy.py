@@ -7,7 +7,7 @@ from lingua import LanguageDetectorBuilder
 
 class AbusSpacy:
     MAX_MERGE_GAP_MS = 500
-    MAX_GROUP_CHARS = 1000
+    MAX_GROUP_CHARS = 250
     SENTENCE_ENDINGS = {'.', '!', '?', '。', '！', '？', '…'}
     NON_SPACING_LANGUAGES = {'ja', 'zh', 'th', 'km', 'lo'}
     MIN_DURATION_MS = 500
@@ -144,7 +144,18 @@ class AbusSpacy:
     def merge_and_split_events(cls, subs, lang: Optional[str] = None, model_size: str = 'sm') -> List[pysubs2.SSAEvent]:
         if not subs:
             return []
-        lang = lang or cls.detect_language(next((e.plaintext for e in subs if e.plaintext.strip()), ''))
+            
+        if not lang:
+            # Sample up to 10 lines or 1000 chars to detect language
+            sample_text = ""
+            count = 0
+            for e in subs:
+                if e.plaintext.strip():
+                    sample_text += e.plaintext + " "
+                    count += 1
+                    if count >= 10 or len(sample_text) > 1000:
+                        break
+            lang = cls.detect_language(sample_text)
         
         events = []
         current_group = []
