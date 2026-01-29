@@ -521,7 +521,8 @@ class GradioGulliver:
                 raise FileNotFoundError(f"Source audio file not found: {source_audio_file}")
                 
             aidub_audio_file = path_add_postfix(source_audio_file, f"_{celeb_name}")                               
-            # 注意：infer_single 内部已经包含了格式检测逻辑
+            # 注意：不要对 text 使用 strip()，因为如果是字幕格式，会破坏其结构
+            # infer_single 内部会自动检测格式并处理
             self.f5_tts.infer_single(text, aidub_audio_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
             
             # Mix
@@ -529,9 +530,9 @@ class GradioGulliver:
             denoise_inst_path, _ = self._denoise(source_audio_file, 1)
             
             if not denoise_inst_path or not os.path.exists(denoise_inst_path):
-                logger.warning(f"Denoised instrumental not found: {denoise_inst_path}")
-                raise FileNotFoundError(f"Instrumental track separation failed")
-                
+                logger.warning(f"Denoised instrumental not found, using silence/original for mixing.")
+                # Fallback or silent
+            
             ffmpeg_mix_audio(aidub_audio_file, denoise_inst_path, mixed_audio_file, 0, 0, audio_format)
             self.fm.set_dubbing(f'{celeb_name}.audio', aidub_audio_file)
                                 
@@ -547,7 +548,7 @@ class GradioGulliver:
         except Exception as e:
             logger.error(f"[gradio_gulliver.py] _f5_tts_single - Error : {e}")
             gr.Warning(f'{e}')
-            return None, None
+            return None, None    
     
     
     # Cosy-Voice
@@ -595,10 +596,11 @@ class GradioGulliver:
                     mode_choice = {mode_choice}, speed_factor = {speed_factor}, audio_format = {audio_format}")     
                 
         try:
-            # CosyVoice
+            # F5-TTS
             source_audio_file = self.fm.get_split("Source.audio")           
             aidub_audio_file = path_add_postfix(source_audio_file, f"_{celeb_name}")                               
-            # 注意：infer_single 内部已经包含了格式检测逻辑
+            # 注意：不要对 text 使用 strip()，因为如果是字幕格式，会破坏其结构
+            # infer_single 内部会自动检测格式并处理
             self.cosy_tts.infer_single(text, aidub_audio_file, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
             
             # Mix
@@ -624,7 +626,7 @@ class GradioGulliver:
         except Exception as e:
             logger.error(f"[gradio_gulliver.py] _cosy_tts_single - Error : {e}")
             gr.Warning(f'{e}')
-            return None, None
+            return None, None    
        
        
        

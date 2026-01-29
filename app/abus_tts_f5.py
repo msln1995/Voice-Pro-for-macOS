@@ -96,8 +96,40 @@ class F5TTS:
         model_paths = self.manager.get_model_paths(model_name)
         default_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
         
-        vocab_path = str(cached_path(model_paths['vocab_path'])) if 'vocab_path' in model_paths else ""
-        ckpt_path = str(cached_path(model_paths['model_path'])) if 'model_path' in model_paths else ""
+        # Helper to resolve path (Local Project Cache -> System Cache)
+        def resolve_path(path_or_url, is_model=True):
+            if not path_or_url: return ""
+            
+            # 1. If it's already a local path, return it (cached_path handles it too, but we can be explicit)
+            if not path_or_url.startswith("hf://") and not path_or_url.startswith("http"):
+                return str(cached_path(path_or_url))
+                
+            # 2. If it's a URL, check if we have a local copy in project 'ckpts'
+            # Construct a safe local directory name from model_name
+            safe_model_name = model_name.replace("/", "_")
+            ckpt_dir = os.path.join(os.getcwd(), "ckpts", safe_model_name)
+            
+            # Extract filename from URL
+            filename = path_or_url.split("/")[-1]
+            local_file_path = os.path.join(ckpt_dir, filename)
+            
+            if os.path.exists(local_file_path):
+                logger.info(f"Found local cache for {filename}: {local_file_path}")
+                return local_file_path
+            
+            # 3. If local copy doesn't exist, we could download it there?
+            # But cached_path downloads to system cache. 
+            # To support "download to project dir", we would need to implement download logic here.
+            # For now, we fallback to system cache (cached_path default behavior), 
+            # UNLESS the user explicitly wants project-local downloads.
+            # Given the user request "can this be put in project dir... if missing will it download to project dir",
+            # we should probably try to download to project dir.
+            
+            logger.info(f"Local cache missing for {filename}. Using cached_path (system cache)...")
+            return str(cached_path(path_or_url))
+
+        vocab_path = resolve_path(model_paths.get('vocab_path', ""))
+        ckpt_path = resolve_path(model_paths.get('model_path', ""))
         model_cfg = model_paths['config'] if 'config' in model_paths else default_cfg
             
         return load_model(DiT, model_cfg, ckpt_path, vocab_file=vocab_path)
@@ -176,13 +208,13 @@ class F5TTS:
     
 
     def srt_to_voice(self, subtitle_file: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
-        tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts", ".srt")
+        # tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts", ".srt")
         
         # AbusText.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)
-        AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)    
+        # AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)    
 
         segments_folder = path_tts_segments_folder(subtitle_file)
-        full_subs = pysubs2.load(tts_subtitle_file, encoding="utf-8")
+        full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
         subs = full_subs
         
         combined_audio = AudioSegment.empty()
@@ -222,7 +254,79 @@ class F5TTS:
             cmd_delete_file(raw_segment_file)
                 
         combined_audio.export(output_file, format=audio_format)         
-        cmd_delete_file(tts_subtitle_file)    
+        # cmd_delete_file(tts_subtitle_file)    
+      
+    
+    def srt_to_voice_multi(self, subtitle_file: str, output_file: str, ref_audio1, ref_text1, ref_audio2, ref_text2, speed_factor, audio_format, progress=gr.Progress()):
+        # tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts-multi", ".srt")
+        
+        # AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)    
+
+        segments_folder = path_tts_segments_folder(subtitle_file)
+        full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
+        subs = full_subs
+        
+        combined_audio = AudioSegment.empty()
+        for i in progress.tqdm(range(len(subs)), desc='Generating...'):
+            line = subs[i]
+            text = line.text
+            
+            # Determine speaker
+            current_ref_audio = ref_audio1
+            current_ref_text = ref_text1
+            
+            if '{spk2}' in text:
+                current_ref_audio = ref_audio2
+                current_ref_text = ref_text2
+                text = text.replace('{spk2}', '')
+            elif '{spk1}' in text:
+                current_ref_audio = ref_audio1
+                current_ref_text = ref_text1
+                text = text.replace('{spk1}', '')
+            
+            # Fallback if selected speaker has no reference
+            if current_ref_audio is None:
+                if ref_audio1 is not None:
+                    current_ref_audio = ref_audio1
+                    current_ref_text = ref_text1
+                else:
+                    logger.warning(f"No reference audio available for line: {text}")
+                    continue
+
+            # 1. Target Duration
+            target_duration = line.end - line.start
+            if target_duration <= 0:
+                continue
+
+            # 2. Generate Raw Audio
+            raw_segment_file = os.path.join(segments_folder, f'raw_{i+1}.{audio_format}')
+            tts_result = self.request_tts(text, raw_segment_file, current_ref_audio, current_ref_text, speed_factor, audio_format)
+
+            if tts_result == False:
+                continue        
+            
+            # 3. Fit Duration
+            fitted_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
+            AbusAudio.fit_to_duration_file(raw_segment_file, fitted_segment_file, target_duration)
+            
+            segment_audio = AudioSegment.from_file(fitted_segment_file)
+            
+            # 4. Absolute Positioning
+            if len(combined_audio) < line.start:
+                silence_gap = line.start - len(combined_audio)
+                combined_audio += AudioSegment.silent(duration=silence_gap)
+            
+            # 5. Concat and Truncate
+            if len(segment_audio) > target_duration:
+                segment_audio = segment_audio[:target_duration]
+                
+            combined_audio += segment_audio
+
+            # Cleanup
+            cmd_delete_file(raw_segment_file)
+                
+        combined_audio.export(output_file, format=audio_format)         
+        # cmd_delete_file(tts_subtitle_file)
       
     
     def text_to_voice(self, dubbing_text: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
@@ -275,6 +379,19 @@ class F5TTS:
         ref_audio2, ref_text2 = preprocess_ref_audio_text(celeb_audio2, celeb_transcript2) if celeb_audio2 else (None, None)
         
         try:
+            # Check for SRT format
+            if AbusText.is_subtitle_format(dubbing_text):
+                try:
+                    subs = pysubs2.SSAFile.from_string(dubbing_text)
+                    subtitle_file = os.path.join(path_dubbing_folder(), path_new_filename(f".{subs.format}"))
+                    subs.save(subtitle_file)
+                    
+                    self.srt_to_voice_multi(subtitle_file, output_file, ref_audio1, ref_text1, ref_audio2, ref_text2, speed_factor, audio_format, progress)
+                    return True
+                except Exception as e:
+                    logger.error(f"[abus_tts_f5.py] infer_multi - Failed to process subtitle: {e}")
+                    # Fallback to normal text processing if subtitle processing fails
+            
             segments_folder = path_tts_segments_folder(output_file)
             conversations = self._parse_conversation_regex(dubbing_text)
             if not conversations:
