@@ -83,13 +83,23 @@ class CosyVoiceInference:
         set_all_random_seed(seed)
     
     
+    def _save_audio_removing_ref(self, output_file, tts_speech, ref_audio_len_samples):
+        if tts_speech.shape[1] > ref_audio_len_samples:
+            tts_speech = tts_speech[:, ref_audio_len_samples:]
+            logger.info(f"[abus_tts_cosyvoice.py] Removed reference audio ({ref_audio_len_samples} samples) from generated wave")
+        torchaudio.save(output_file, tts_speech, self.cosyvoice.sample_rate)
+
     def generate_audio_zero_shot(self, dubbing_text:str, output_file, ref_audio, ref_text, speed_factor):       
         logger.debug(f"[abus_tts_cosyvoice.py] generate_audio_zero_shot - ref_audio = {ref_audio}, ref_text = {ref_text}, dubbing_text = {dubbing_text}")
     
         # zero_shot usage    
         prompt_speech_16k = self.postprocess(load_wav(ref_audio, prompt_sr))
+        
+        # Calculate reference audio length in target sample rate
+        ref_audio_len_samples = int((prompt_speech_16k.shape[1] / prompt_sr) * self.cosyvoice.sample_rate)
+        
         for i, j in enumerate(self.cosyvoice.inference_zero_shot(dubbing_text, ref_text, prompt_speech_16k, stream=False, speed=speed_factor, text_frontend=False)):
-            torchaudio.save(output_file, j['tts_speech'], self.cosyvoice.sample_rate)
+            self._save_audio_removing_ref(output_file, j['tts_speech'], ref_audio_len_samples)
         
            
     def generate_audio_cross_lingual(self, dubbing_text:str, output_file, ref_audio, ref_text, speed_factor):       
@@ -97,16 +107,24 @@ class CosyVoiceInference:
     
         # fine grained control, for supported control, check cosyvoice/tokenizer/tokenizer.py#L248    
         prompt_speech_16k = self.postprocess(load_wav(ref_audio, prompt_sr))
+        
+        # Calculate reference audio length in target sample rate
+        ref_audio_len_samples = int((prompt_speech_16k.shape[1] / prompt_sr) * self.cosyvoice.sample_rate)
+
         for i, j in enumerate(self.cosyvoice.inference_cross_lingual(dubbing_text, prompt_speech_16k, speed=speed_factor, stream=False)):
-            torchaudio.save(output_file, j['tts_speech'], self.cosyvoice.sample_rate)
+            self._save_audio_removing_ref(output_file, j['tts_speech'], ref_audio_len_samples)
     
     def generate_audio_instruct(self, dubbing_text:str, output_file, ref_audio, ref_text, speed_factor):       
         logger.debug(f"[abus_tts_cosyvoice.py] generate_audio_instruct - ref_audio = {ref_audio}, ref_text = {ref_text}, dubbing_text = {dubbing_text}")
     
         # instruct usage
         prompt_speech_16k = self.postprocess(load_wav(ref_audio, prompt_sr))
+        
+        # Calculate reference audio length in target sample rate
+        ref_audio_len_samples = int((prompt_speech_16k.shape[1] / prompt_sr) * self.cosyvoice.sample_rate)
+
         for i, j in enumerate(self.cosyvoice.inference_instruct2(dubbing_text, '', prompt_speech_16k, stream=False)):
-            torchaudio.save(output_file, j['tts_speech'], self.cosyvoice.sample_rate)
+            self._save_audio_removing_ref(output_file, j['tts_speech'], ref_audio_len_samples)
                     
     
     def postprocess(self, speech, top_db=60, hop_length=220, win_length=440):

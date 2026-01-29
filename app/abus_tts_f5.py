@@ -191,6 +191,19 @@ class F5TTS:
                 speed=speed_factor,
                 progress=progress
             )
+            
+            # Remove reference audio from the generated wave
+            if isinstance(ref_audio, torch.Tensor):
+                ref_audio_len = ref_audio.shape[-1]
+            elif isinstance(ref_audio, np.ndarray):
+                ref_audio_len = ref_audio.shape[-1] if len(ref_audio.shape) > 1 else len(ref_audio)
+            else:
+                ref_audio_len = len(ref_audio)
+                
+            if len(final_wave) > ref_audio_len:
+                final_wave = final_wave[ref_audio_len:]
+                logger.info(f"[abus_tts_f5.py] Removed reference audio ({ref_audio_len} samples) from generated wave")
+            
             logger.debug(f'[abus_tts_f5.py] final_sample_rate - {final_sample_rate}')
             logger.debug(f'[abus_tts_f5.py] final_wave - {final_wave}')
             
