@@ -215,7 +215,7 @@ class F5TTS:
 
     def srt_to_voice(self, subtitle_file: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
         tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts", ".srt")
-        AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)
+        AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file, enable_merge=False)
         full_subs = pysubs2.load(tts_subtitle_file, encoding="utf-8")
         subs = full_subs
         segments_folder = os.path.join(os.path.dirname(subtitle_file), f"cache_{Path(subtitle_file).stem}_f5")
@@ -234,6 +234,14 @@ class F5TTS:
                         if seg and file_path:
                             try:
                                 seg.export(file_path, format=audio_format)
+                                
+                                if dur and dur > 0:
+                                    temp_adjusted = path_add_postfix(file_path, "_adjusted")
+                                    # Limit speed up to 1.1x to avoid "rushed" speech
+                                    success, _ = AbusAudio.fit_to_duration_file(file_path, temp_adjusted, dur, max_speed=1.1)
+                                    if success and os.path.exists(temp_adjusted):
+                                        os.replace(temp_adjusted, file_path)
+                                        seg = AudioSegment.from_file(file_path)
                             except Exception as e:
                                 logger.error(f"Failed to save segment {idx}: {e}")
                         results[idx] = seg
@@ -283,6 +291,11 @@ class F5TTS:
                 silence = AudioSegment.silent(duration=line.start)
                 combined_audio += silence
             seg = results.get(i)
+            
+            # target_duration = line.end - line.start
+            # if seg and len(seg) > target_duration:
+            #     seg = seg[:target_duration]
+                
             if seg:
                 combined_audio += seg
             current_end = len(combined_audio)
@@ -291,8 +304,7 @@ class F5TTS:
                     silence = AudioSegment.silent(duration=next_line.start - current_end)
                     combined_audio += silence
                 elif current_end > next_line.start:
-                    next_line.start = current_end
-                    next_line.end = next_line.start + (next_line.end - next_line.start)
+                    pass
         combined_audio.export(output_file, format=audio_format)
         cmd_delete_file(tts_subtitle_file)
       
@@ -317,6 +329,14 @@ class F5TTS:
                         if seg and file_path:
                             try:
                                 seg.export(file_path, format=audio_format)
+                                
+                                if dur and dur > 0:
+                                    temp_adjusted = path_add_postfix(file_path, "_adjusted")
+                                    # Limit speed up to 1.1x to avoid "rushed" speech
+                                    success, _ = AbusAudio.fit_to_duration_file(file_path, temp_adjusted, dur, max_speed=1.1)
+                                    if success and os.path.exists(temp_adjusted):
+                                        os.replace(temp_adjusted, file_path)
+                                        seg = AudioSegment.from_file(file_path)
                             except Exception as e:
                                 logger.error(f"Failed to save segment {idx}: {e}")
                         results[idx] = seg
@@ -384,6 +404,11 @@ class F5TTS:
                 silence = AudioSegment.silent(duration=line.start)
                 combined_audio += silence
             seg = results.get(i)
+            
+            # target_duration = line.end - line.start
+            # if seg and len(seg) > target_duration:
+            #     seg = seg[:target_duration]
+                
             if seg:
                 combined_audio += seg
             current_end = len(combined_audio)
@@ -392,8 +417,7 @@ class F5TTS:
                     silence = AudioSegment.silent(duration=next_line.start - current_end)
                     combined_audio += silence
                 elif current_end > next_line.start:
-                    next_line.start = current_end
-                    next_line.end = next_line.start + (next_line.end - next_line.start)
+                    pass
         combined_audio.export(output_file, format=audio_format)
         cmd_delete_file(tts_subtitle_file)
     

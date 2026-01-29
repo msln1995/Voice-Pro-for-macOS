@@ -238,14 +238,37 @@ class AbusSpacy:
         return result
 
     @classmethod
-    def process_subtitle_for_tts(cls, subtitle_file: str, output_file: str, lang: Optional[str] = None, model_size: str = 'lg'):
+    def process_subtitle_for_tts(cls, subtitle_file: str, output_file: str, lang: Optional[str] = None, model_size: str = 'lg', enable_merge: bool = True):
         try:
             subs = pysubs2.load(subtitle_file, encoding="utf-8")
-            processed = cls.merge_and_split_events(subs, lang, model_size)
+            
+            if enable_merge:
+                processed = cls.merge_and_split_events(subs, lang, model_size)
+            else:
+                # 只做简单的清洗，不合并
+                if not lang:
+                    sample_text = ""
+                    count = 0
+                    for e in subs:
+                        if e.plaintext.strip():
+                            sample_text += e.plaintext + " "
+                            count += 1
+                            if count >= 10 or len(sample_text) > 1000:
+                                break
+                    lang = cls.detect_language(sample_text)
+                
+                processed = []
+                for event in subs:
+                    text = cls.normalize_text(event.plaintext, lang)
+                    if not text:
+                        continue
+                    # 保持原始时间戳和文本
+                    processed.append(pysubs2.SSAEvent(start=event.start, end=event.end, text=text))
+
             new_subs = pysubs2.SSAFile()
             new_subs.events = processed
             new_subs.save(output_file)
-            print(f"Processed {len(subs)} events into {len(processed)} events with model_size={model_size}")
+            print(f"Processed {len(subs)} events into {len(processed)} events (merge={enable_merge})")
             return True
         except Exception as e:
             print(f"Error: {e}")
