@@ -5,6 +5,8 @@ import pysubs2
 import re
 import unicodedata
 import string
+import queue
+import threading
 
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
@@ -172,15 +174,20 @@ class F5TTS:
             progress=progress
         )
         logger.debug(f'[abus_tts_f5.py] final_sample_rate - {final_sample_rate}')
-        logger.debug(f'[abus_tts_f5.py] final_wave - {final_wave}')
+        # logger.debug(f'[abus_tts_f5.py] final_wave - {final_wave}')
         
-        sf.write(output_file, final_wave, final_sample_rate)
+        # Return numpy array and sample rate instead of writing to file
+        return final_wave, final_sample_rate
+        # sf.write(output_file, final_wave, final_sample_rate)
         
         
                     
     
     
     def request_tts(self, line: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format):
+        # This method is now primarily for single-file requests (not batch)
+        # For batch processing, use internal helpers to avoid file I/O
+        
         output_voice_file = os.path.join(path_dubbing_folder(), path_new_filename(ext = f".{audio_format}"))
         line = AbusText.normalize_text(line)
         if len(line) < 1:
@@ -189,88 +196,252 @@ class F5TTS:
         
         logger.debug(f'[abus_tts_f5.py] request_tts - line = {line}')
         try:
-            self.generate_audio(line, output_voice_file, ref_audio, ref_text, speed_factor)
+            # 1. Generate (In-Memory)
+            final_wave, sample_rate = self.generate_audio(line, None, ref_audio, ref_text, speed_factor)
+            
+            # 2. Convert Numpy -> AudioSegment
+            # pydub requires int16 or float32 bytes. F5-TTS likely returns float32 (-1.0 to 1.0) or int16.
+            # soundfile handles this automatically. 
+            # To be safe, let's write to a buffer or use soundfile to write to a temp file if needed, 
+            # BUT we want to avoid I/O.
+            
+            # Efficient conversion: Numpy -> Bytes -> AudioSegment
+            # Assuming final_wave is float32, we convert to int16 for pydub
+            if final_wave.dtype.kind == 'f':
+                 final_wave = (final_wave * 32767).astype(np.int16)
+            
+            audio_segment = AudioSegment(
+                final_wave.tobytes(), 
+                frame_rate=sample_rate,
+                sample_width=2, # 16-bit
+                channels=1
+            )
+            
+            # 3. Trim Silence (In-Memory)
+            trimmed_audio = AbusAudio.trim_silence_audio(audio_segment)
+            
+            # 4. Convert to Stereo (In-Memory)
+            # Duplicate mono channel to stereo
+            stereo_audio = AudioSegment.from_mono_audiosegments(trimmed_audio, trimmed_audio)
+            
+            # 5. Export
+            stereo_audio.export(output_file, format=audio_format)
+            
+            return True
         except Exception as e:
             logger.error(f"[abus_tts_f5.py] request_tts - generate_audio error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
         
-        trimed_voice_file = path_add_postfix(output_voice_file, "_trimed")
-        AbusAudio.trim_silence_file(output_voice_file, trimed_voice_file)        
-        ffmpeg_to_stereo(trimed_voice_file, output_file)
+        # Legacy code removed
+        # trimed_voice_file = path_add_postfix(output_voice_file, "_trimed")
+        # AbusAudio.trim_silence_file(output_voice_file, trimed_voice_file)        
+        # ffmpeg_to_stereo(trimed_voice_file, output_file)
         
-        try:
-            os.remove(output_voice_file)
-            os.remove(trimed_voice_file)
-        except Exception as e:
-            logger.error(f"[abus_tts_f5.py] request_tts - error: {e}")
-            return False        
-        return True
+        # try:
+        #     os.remove(output_voice_file)
+        #     os.remove(trimed_voice_file)
+        # except Exception as e:
+        #     logger.error(f"[abus_tts_f5.py] request_tts - error: {e}")
+        #     return False        
+        # return True
     
 
-    def srt_to_voice(self, subtitle_file: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
-        # tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts", ".srt")
+    def _post_process_audio_segment(self, final_wave, sample_rate, text, target_duration_ms=None):
+        """
+        Helper for batch processing (CPU-bound): Numpy -> AudioSegment -> Trim -> Speed -> Stereo.
+        Returns an AudioSegment object.
+        """
+        if final_wave is None:
+            return None
+            
+        # 1. Numpy -> AudioSegment
+        if final_wave.dtype.kind == 'f':
+             final_wave = (final_wave * 32767).astype(np.int16)
         
-        # AbusText.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)
-        # AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)    
+        segment = AudioSegment(
+            final_wave.tobytes(), 
+            frame_rate=sample_rate,
+            sample_width=2, 
+            channels=1
+        )
+        
+        # 2. Trim Silence
+        segment = AbusAudio.trim_silence_audio(segment)
+        
+        # 3. Fit Duration (Only if target_duration is set)
+        if target_duration_ms and target_duration_ms > 0:
+            current_duration = len(segment)
+            # If generated audio is significantly longer than target (allow 5% tolerance)
+            if current_duration > target_duration_ms * 1.05:
+                # Need to speed up. Pydub speedup changes pitch, so we MUST use FFmpeg (atempo).
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_in:
+                    temp_in_path = tmp_in.name
+                
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_out:
+                    temp_out_path = tmp_out.name
+                    
+                try:
+                    segment.export(temp_in_path, format="wav")
+                    
+                    # Calculate speed ratio
+                    speed_ratio = current_duration / target_duration_ms
+                    
+                    # Run FFmpeg
+                    from app.abus_ffmpeg import ffmpeg_change_audio_speed
+                    if ffmpeg_change_audio_speed(temp_in_path, temp_out_path, speed_ratio):
+                        # Read back
+                        segment = AudioSegment.from_file(temp_out_path)
+                    else:
+                        logger.warning(f"Failed to change speed for segment: {text}")
+                finally:
+                    if os.path.exists(temp_in_path): os.remove(temp_in_path)
+                    if os.path.exists(temp_out_path): os.remove(temp_out_path)
+                    
+        # 4. Convert to Stereo
+        segment = AudioSegment.from_mono_audiosegments(segment, segment)
+        
+        return segment
 
-        segments_folder = path_tts_segments_folder(subtitle_file)
+
+    def srt_to_voice(self, subtitle_file: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
         full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
         subs = full_subs
         
-        combined_audio = AudioSegment.empty()
+        # Results container (index -> AudioSegment)
+        results = {}
+        
+        # Queue for passing data from GPU (Producer) to CPU (Consumer)
+        # Item: (index, final_wave, sample_rate, text, target_duration)
+        audio_queue = queue.Queue()
+        
+        # Consumer Worker (CPU Processing)
+        def consumer_worker():
+            while True:
+                item = audio_queue.get()
+                if item is None:
+                    break
+                
+                idx, wave, rate, txt, dur = item
+                try:
+                    if wave is not None:
+                        seg = self._post_process_audio_segment(wave, rate, txt, dur)
+                        results[idx] = seg
+                    else:
+                        results[idx] = None
+                except Exception as e:
+                    logger.error(f"Error processing line {idx}: {e}")
+                    results[idx] = None
+                finally:
+                    audio_queue.task_done()
+        
+        # Start Consumer Thread
+        t = threading.Thread(target=consumer_worker, daemon=True)
+        t.start()
+        
+        # Producer Loop (GPU Generation)
         for i in progress.tqdm(range(len(subs)), desc='Generating...'):
             line = subs[i]
-            
-            # 1. 确定目标时长
             target_duration = line.end - line.start
+            
             if target_duration <= 0:
+                results[i] = None
                 continue
 
-            # 2. 生成原始音频段落
-            raw_segment_file = os.path.join(segments_folder, f'raw_{i+1}.{audio_format}')
-            tts_result = self.request_tts(line.text, raw_segment_file, ref_audio, ref_text, speed_factor, audio_format)
+            try:
+                # Generate (GPU)
+                line_text = AbusText.normalize_text(line.text)
+                if len(line_text) < 1:
+                    results[i] = None
+                    continue
 
-            if tts_result == False:
-                continue        
+                final_wave, sample_rate = self.generate_audio(line_text, None, ref_audio, ref_text, speed_factor)
+                
+                # Put in Queue for CPU processing
+                audio_queue.put((i, final_wave, sample_rate, line_text, target_duration))
+                
+            except Exception as e:
+                logger.error(f"Error generating line {i}: {e}")
+                results[i] = None
+
+        # Signal end of processing
+        audio_queue.put(None)
+        t.join()
+        
+        # Final Assembly (Main Thread)
+        audio_segments = []
+        
+        for i in range(len(subs)):
+            line = subs[i]
+            target_duration = line.end - line.start
             
-            # 3. 适配时长 (变速不变调)
-            fitted_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
-            AbusAudio.fit_to_duration_file(raw_segment_file, fitted_segment_file, target_duration)
+            segment_audio = results.get(i)
             
-            segment_audio = AudioSegment.from_file(fitted_segment_file)
+            if segment_audio is None and target_duration > 0:
+                # Fallback: silence
+                segment_audio = AudioSegment.silent(duration=target_duration)
+            elif segment_audio is None:
+                 continue
+
+            # Absolute Positioning Sync Logic
+            current_total_duration = sum(len(s) for s in audio_segments)
             
-            # 4. 绝对定位拼接
-            if len(combined_audio) < line.start:
-                silence_gap = line.start - len(combined_audio)
-                combined_audio += AudioSegment.silent(duration=silence_gap)
+            if current_total_duration < line.start:
+                silence_gap = line.start - current_total_duration
+                if silence_gap > 0:
+                    audio_segments.append(AudioSegment.silent(duration=silence_gap))
             
-            # 5. 拼接与截断
+            # Truncate if too long
             if len(segment_audio) > target_duration:
                 segment_audio = segment_audio[:target_duration]
                 
-            combined_audio += segment_audio
+            audio_segments.append(segment_audio)
 
-            # 清理临时文件
-            cmd_delete_file(raw_segment_file)
-                
-        combined_audio.export(output_file, format=audio_format)         
-        # cmd_delete_file(tts_subtitle_file)    
+        # Export
+        if audio_segments:
+            combined_audio = sum(audio_segments)
+            combined_audio.export(output_file, format=audio_format)         
       
     
     def srt_to_voice_multi(self, subtitle_file: str, output_file: str, ref_audio1, ref_text1, ref_audio2, ref_text2, speed_factor, audio_format, progress=gr.Progress()):
-        # tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts-multi", ".srt")
-        
-        # AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)    
-
-        segments_folder = path_tts_segments_folder(subtitle_file)
         full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
         subs = full_subs
         
-        combined_audio = AudioSegment.empty()
+        results = {}
+        audio_queue = queue.Queue()
+        
+        def consumer_worker():
+            while True:
+                item = audio_queue.get()
+                if item is None: break
+                
+                idx, wave, rate, txt, dur = item
+                try:
+                    if wave is not None:
+                        seg = self._post_process_audio_segment(wave, rate, txt, dur)
+                        results[idx] = seg
+                    else:
+                        results[idx] = None
+                except Exception as e:
+                    logger.error(f"Error processing line {idx}: {e}")
+                    results[idx] = None
+                finally:
+                    audio_queue.task_done()
+        
+        t = threading.Thread(target=consumer_worker, daemon=True)
+        t.start()
+        
         for i in progress.tqdm(range(len(subs)), desc='Generating...'):
             line = subs[i]
             text = line.text
+            target_duration = line.end - line.start
             
+            if target_duration <= 0:
+                results[i] = None
+                continue
+                
             # Determine speaker
             current_ref_audio = ref_audio1
             current_ref_text = ref_text1
@@ -284,49 +455,61 @@ class F5TTS:
                 current_ref_text = ref_text1
                 text = text.replace('{spk1}', '')
             
-            # Fallback if selected speaker has no reference
+            # Fallback
             if current_ref_audio is None:
                 if ref_audio1 is not None:
                     current_ref_audio = ref_audio1
                     current_ref_text = ref_text1
                 else:
                     logger.warning(f"No reference audio available for line: {text}")
+                    results[i] = None
                     continue
 
-            # 1. Target Duration
+            try:
+                line_text = AbusText.normalize_text(text)
+                if len(line_text) < 1:
+                    results[i] = None
+                    continue
+
+                # Generate (GPU)
+                final_wave, sample_rate = self.generate_audio(line_text, None, current_ref_audio, current_ref_text, speed_factor)
+                
+                audio_queue.put((i, final_wave, sample_rate, line_text, target_duration))
+                
+            except Exception as e:
+                logger.error(f"Error generating line {i}: {e}")
+                results[i] = None
+
+        audio_queue.put(None)
+        t.join()
+        
+        # Assembly
+        audio_segments = []
+        for i in range(len(subs)):
+            line = subs[i]
             target_duration = line.end - line.start
-            if target_duration <= 0:
+            
+            segment_audio = results.get(i)
+            
+            if segment_audio is None and target_duration > 0:
+                segment_audio = AudioSegment.silent(duration=target_duration)
+            elif segment_audio is None:
                 continue
-
-            # 2. Generate Raw Audio
-            raw_segment_file = os.path.join(segments_folder, f'raw_{i+1}.{audio_format}')
-            tts_result = self.request_tts(text, raw_segment_file, current_ref_audio, current_ref_text, speed_factor, audio_format)
-
-            if tts_result == False:
-                continue        
             
-            # 3. Fit Duration
-            fitted_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
-            AbusAudio.fit_to_duration_file(raw_segment_file, fitted_segment_file, target_duration)
+            current_total_duration = sum(len(s) for s in audio_segments)
+            if current_total_duration < line.start:
+                silence_gap = line.start - current_total_duration
+                if silence_gap > 0:
+                    audio_segments.append(AudioSegment.silent(duration=silence_gap))
             
-            segment_audio = AudioSegment.from_file(fitted_segment_file)
-            
-            # 4. Absolute Positioning
-            if len(combined_audio) < line.start:
-                silence_gap = line.start - len(combined_audio)
-                combined_audio += AudioSegment.silent(duration=silence_gap)
-            
-            # 5. Concat and Truncate
             if len(segment_audio) > target_duration:
                 segment_audio = segment_audio[:target_duration]
                 
-            combined_audio += segment_audio
+            audio_segments.append(segment_audio)
 
-            # Cleanup
-            cmd_delete_file(raw_segment_file)
-                
-        combined_audio.export(output_file, format=audio_format)         
-        # cmd_delete_file(tts_subtitle_file)
+        if audio_segments:
+            combined_audio = sum(audio_segments)
+            combined_audio.export(output_file, format=audio_format)
       
     
     def text_to_voice(self, dubbing_text: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
