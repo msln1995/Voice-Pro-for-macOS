@@ -45,23 +45,17 @@ class GradioF5TTS:
     
     def gradio_tts_dubbing_single(self, dubbing_text:str, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format: str):
         if not (dubbing_text and dubbing_text.strip()):
-            gr.Warning(i18n("Input error: Please provide text to dub."))
-            return None, None
-
-        if celeb_audio is None:
-            gr.Warning(i18n("Input error: Please select or upload a reference audio."))
-            return None, None
+            message = i18n("Input error")
+            gr.Warning(message)
+            return None, None           
        
         input_text = dubbing_text
         logger.debug(f"[gradio_tts_f5.py] gradio_tts_dubbing_single - input_text: {input_text}")                  
         
         try:
             dubbing_file = os.path.join(path_dubbing_folder(), path_new_filename(f".{audio_format}"))
-            success = self.tts.infer_single(input_text.strip(), dubbing_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
-            if success:
-                return dubbing_file, dubbing_file
-            else:
-                return None, None
+            self.tts.infer_single(input_text.strip(), dubbing_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
+            return dubbing_file, dubbing_file
         except Exception as e:
             logger.error(f"[gradio_tts_f5.py] gradio_tts_dubbing_single - error: {e}")
             gr.Warning(f'{e}')
@@ -69,15 +63,11 @@ class GradioF5TTS:
 
 
     def gradio_add_label_spk1(self, text):
-        if text and not text.endswith('\n'):
-            text += '\n'
-        text += '{spk1} '
+        text += '{spk1} \n'
         return text
 
     def gradio_add_label_spk2(self, text):
-        if text and not text.endswith('\n'):
-            text += '\n'
-        text += '{spk2} '
+        text += '{spk2} \n'
         return text
 
 
@@ -85,23 +75,17 @@ class GradioF5TTS:
 
     def gradio_tts_dubbing_multi(self, dubbing_text:str, celeb_audio1, celeb_transcript1, celeb_audio2, celeb_transcript2, model_choice, speed_factor, audio_format: str):
         if not (dubbing_text and dubbing_text.strip()):
-            gr.Warning(i18n("Input error: Please provide text to dub."))
-            return None, None
-
-        if celeb_audio1 is None:
-            gr.Warning(i18n("Input error: Please provide at least reference audio for Speaker 1."))
-            return None, None
+            message = i18n("Input error")
+            gr.Warning(message)
+            return None, None        
         
         input_text = dubbing_text
         logger.debug(f"[gradio_tts_f5.py] gradio_tts_dubbing_multi - input_text: {input_text}")           
         
         try:
             dubbing_file = os.path.join(path_dubbing_folder(), path_new_filename(f".{audio_format}"))
-            success = self.tts.infer_multi(input_text.strip(), dubbing_file, celeb_audio1, celeb_transcript1, celeb_audio2, celeb_transcript2, model_choice, speed_factor, audio_format)
-            if success:
-                return dubbing_file, dubbing_file
-            else:
-                return None, None
+            self.tts.infer_multi(input_text.strip(), dubbing_file, celeb_audio1, celeb_transcript1, celeb_audio2, celeb_transcript2, model_choice, speed_factor, audio_format)
+            return dubbing_file, dubbing_file
         except Exception as e:
             logger.error(f"[gradio_tts_f5.py] gradio_tts_dubbing_multi - error: {e}")
             gr.Warning(f'{e}')

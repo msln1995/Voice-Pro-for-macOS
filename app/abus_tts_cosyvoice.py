@@ -72,8 +72,11 @@ class CosyVoiceInference:
     
     @staticmethod
     def release_cuda_memory():
-        from app.abus_device import AbusDevice
-        AbusDevice.release_device_memory()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_max_memory_allocated()
+            logger.debug(f'[abus_tts_cosyvoice.py] release_cuda_memory - OK!! ')
                 
     def set_random_seed(self):
         seed = random.randint(1, 100000000)
@@ -162,38 +165,30 @@ class CosyVoiceInference:
         combined_audio = AudioSegment.empty()
         for i in progress.tqdm(range(len(subs)), desc='Generating...'):
             line = subs[i]
+            next_line = subs[i+1] if i < len(subs)-1 else None
             
-            # 1. 确定目标时长
-            target_duration = line.end - line.start
-            if target_duration <= 0:
-                continue
+            if i == 0:
+                silence = AudioSegment.silent(duration=line.start)
+                combined_audio += silence   
 
-            # 2. 生成原始音频段落
-            raw_segment_file = os.path.join(segments_folder, f'raw_{i+1}.{audio_format}')
-            tts_result = self.request_tts(line.text, raw_segment_file, ref_audio, ref_text, inference_mode, speed_factor, audio_format)
+            tts_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
+            tts_result = self.request_tts(line.text, tts_segment_file, ref_audio, ref_text, inference_mode, speed_factor, audio_format)
 
             if tts_result == False:
+                if next_line:
+                    silence = AudioSegment.silent(duration=next_line.start-line.start)
+                    combined_audio += silence
                 continue        
             
-            # 3. 适配时长 (变速不变调)
-            fitted_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
-            AbusAudio.fit_to_duration_file(raw_segment_file, fitted_segment_file, target_duration)
-            
-            segment_audio = AudioSegment.from_file(fitted_segment_file)
-            
-            # 4. 绝对定位拼接
-            if len(combined_audio) < line.start:
-                silence_gap = line.start - len(combined_audio)
-                combined_audio += AudioSegment.silent(duration=silence_gap)
-            
-            # 5. 拼接与截断
-            if len(segment_audio) > target_duration:
-                segment_audio = segment_audio[:target_duration]
-                
-            combined_audio += segment_audio
+            combined_audio += AudioSegment.from_file(tts_segment_file)
 
-            # 清理临时文件
-            cmd_delete_file(raw_segment_file)
+            if next_line and len(combined_audio) < next_line.start:
+                silence_length = next_line.start - len(combined_audio)
+                silence = AudioSegment.silent(duration=silence_length)
+                combined_audio += silence
+            elif next_line:
+                next_line.start = len(combined_audio)
+                next_line.end = next_line.start + (next_line.end - next_line.start)
                 
         combined_audio.export(output_file, format=audio_format)   
         cmd_delete_file(tts_subtitle_file)        
@@ -221,24 +216,21 @@ class CosyVoiceInference:
     def infer_single(self, dubbing_text:str, output_file, celeb_audio, celeb_transcript, inference_mode, speed_factor, audio_format: str, progress=gr.Progress()):
         self.set_random_seed()
                 
-        try:
-            ref_audio, ref_text = preprocess_ref_audio_text(celeb_audio, celeb_transcript)
-            
-            subtitle_file = None
-            if AbusText.is_subtitle_format(dubbing_text):
-                subs = pysubs2.SSAFile.from_string(dubbing_text)
-                subtitle_file = os.path.join(path_dubbing_folder(), path_new_filename(f".{subs.format}"))
-                subs.save(subtitle_file)               
+        ref_audio, ref_text = preprocess_ref_audio_text(celeb_audio, celeb_transcript)
+        
+        subtitle_file = None
+        if AbusText.is_subtitle_format(dubbing_text):
+            subs = pysubs2.SSAFile.from_string(dubbing_text)
+            subtitle_file = os.path.join(path_dubbing_folder(), path_new_filename(f".{subs.format}"))
+            subs.save(subtitle_file)               
 
-            if subtitle_file:
-                self.srt_to_voice(subtitle_file, output_file, ref_audio, ref_text, inference_mode, speed_factor, audio_format, progress)
-            else:
-                self.text_to_voice(dubbing_text, output_file, ref_audio, ref_text, inference_mode, speed_factor, audio_format, progress)
-            return True
-        except Exception as e:
-            logger.error(f"[abus_tts_cosyvoice.py] infer_single - error: {e}")
-            return False
-        finally:
-            self.release_cuda_memory()
+        if subtitle_file:
+            self.srt_to_voice(subtitle_file, output_file, ref_audio, ref_text, inference_mode, speed_factor, audio_format, progress)
+        else:
+            self.text_to_voice(dubbing_text, output_file, ref_audio, ref_text, inference_mode, speed_factor, audio_format, progress)
+
+        # del self.ema_model
+        # self.ema_model = None
+        self.release_cuda_memory()
 
             

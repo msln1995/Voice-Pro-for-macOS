@@ -166,7 +166,6 @@ class WhisperXInference:
             return subtitles
         except Exception as e:
             logger.error(f"[abus_asr_whisperx.py] transcribe_file - An error occurred: {e}")
-            return []
         finally:
             self.model = None
             self.release_cuda_memory()
@@ -178,12 +177,6 @@ class WhisperXInference:
                    params: WhisperParameters,
                    progress: gr.Progress
                    ) -> Tuple[List[dict], float]:
-
-        if audio is None:
-            raise ValueError("Audio input is None")
-
-        if isinstance(audio, str):
-            audio = whisperx.load_audio(audio)
 
         start_time = time.time()        
         

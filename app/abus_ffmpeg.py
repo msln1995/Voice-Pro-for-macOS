@@ -399,53 +399,6 @@ def ffmpeg_change_fps(input_path, output_path, target_fps):
         return False    
 
 
-def ffmpeg_change_audio_speed(input_path: str, output_path: str, speed: float):
-    if not os.path.exists(input_path):
-        logger.error(f'[abus:ffmpeg_change_audio_speed] Input file not found: {input_path}')
-        return False
-
-    # speed range checking (0.5 ~ 100.0 for safety)
-    speed = max(0.5, min(speed, 100.0))
-    
-    input_path_encoded = input_path.encode('utf-8')  # UTF-8 encoded
-    output_path_encoded = output_path.encode('utf-8') # UTF-8 encoded
-    
-    # atempo filter can handle 0.5 to 2.0
-    # for speed > 2.0 or < 0.5, we need to chain filters. 
-    # But for TTS sync, usually speed is between 0.8 and 1.5. 
-    # implementing simple logic for now.
-    
-    filter_complex = f"atempo={speed}"
-    if speed > 2.0:
-        # e.g. 4.0 -> atempo=2.0,atempo=2.0
-        filter_complex = "atempo=2.0,atempo=2.0" # Simplification for extreme cases
-    
-    command = [
-        'ffmpeg',
-        '-y', 
-        '-i', input_path_encoded,
-        '-filter:a', filter_complex,
-        '-vn', # Audio only
-        output_path_encoded
-    ]
-    logger.debug(f'[abus:ffmpeg_change_audio_speed] command = {command}')
-        
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding='utf-8', 
-            check=True 
-        )
-        logger.debug(f'[abus:ffmpeg_change_audio_speed] result.stdout = {result.stdout}')
-        return True
-        
-    except Exception as e:
-        logger.error(f"[abus:ffmpeg_change_audio_speed] Unexpected error: {str(e)}")
-        return False
-
-
 def ffmpeg_get_duration(input_path):
     if not os.path.exists(input_path):
         logger.error(f'[abus:ffmpeg_get_duration] Input file not found: {input_path}')

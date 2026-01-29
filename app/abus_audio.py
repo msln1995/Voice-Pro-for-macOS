@@ -1,8 +1,6 @@
-import os
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
 
-from app.abus_ffmpeg import *
 
 import structlog
 logger = structlog.get_logger()
@@ -14,45 +12,22 @@ class AbusAudio():
     
     
     @staticmethod
-    def fit_to_duration_file(input_file, output_file, target_duration_ms, max_speed=None):
-        """
-        오디오 파일을 목표 길이에 맞게 조정합니다.
-        목표보다 길 경우 속도를 조절(speed up)합니다.
-        
-        :param input_file: 입력 파일 경로
-        :param output_file: 출력 파일 경로
-        :param target_duration_ms: 목표 길이 (밀리초)
-        :param max_speed: 최대 허용 속도 배율 (예: 1.25)
-        :return: (성공여부, 실제 생성된 오디오의 길이)
-        """
-        if not os.path.exists(input_file):
-            return False, 0
+    def shirink(input_file, duration):
+        audio = AudioSegment.from_file(input_file)
+        return audio, 0
+    
+        # diff = len(audio) - duration
+        # if diff > 0 and duration > 0:
+            # new_speed = min(diff/duration + 1.0, 1.5)
+            # new_frame_rate = int(audio.frame_rate * new_speed)
+            # changed_audio = audio._spawn(audio.raw_data, overrides={'frame_rate': new_frame_rate})
+            # changed_audio = changed_audio.set_frame_rate(audio.frame_rate)
+            # changed_audio.export(input_file)
+            # audio = changed_audio
             
-        current_duration = ffmpeg_get_duration(input_file) * 1000 # ms
-        
-        # 1. 목표보다 길 경우 (5% 여유 공간 부여)
-        if current_duration > target_duration_ms * 1.05:
-            speed = current_duration / target_duration_ms
-            
-            # 최대 속도 제한 적용
-            if max_speed is not None and speed > max_speed:
-                logger.warning(f"[abus_audio.py] Speed {speed:.2f} exceeds limit {max_speed}, clamping.")
-                speed = max_speed
-                
-            logger.debug(f"[abus_audio.py] fit_to_duration_file - Speeding up: {current_duration}ms -> {target_duration_ms}ms (speed={speed:.2f})")
-            success = ffmpeg_change_audio_speed(input_file, output_file, speed)
-            
-            if success:
-                # 실제 결과 길이 계산
-                actual_duration = current_duration / speed
-                return True, actual_duration
-            else:
-                return False, current_duration
-        else:
-            # 2. 충분히 짧거나 비슷할 경우 그대로 사용
-            import shutil
-            shutil.copy2(input_file, output_file)
-            return True, current_duration
+        #     return audio, 0
+        # else:
+        #     return audio, diff*(-1)
         
         
         

@@ -63,47 +63,25 @@ class YoutubeDownloader:
         ydl_opts['keepvideo'] = False
         ydl_opts['progress_hooks'] = [self.dl_progress_hook]
         ydl_opts['playlist_items'] = '1'
-        ydl_opts['retries'] = 20
-        ydl_opts['fragment_retries'] = 20
-        ydl_opts['nocheckcertificate'] = True
-        ydl_opts['socket_timeout'] = 30
-        ydl_opts['ignoreerrors'] = True
         
-        # 설정 초기화 및 사용자 성공 사례 기반 옵션 구성
-        ydl_opts['merge_output_format'] = 'mp4'
+        # User Agent 설정 추가
+        ydl_opts['http_headers'] = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }        
         
-        # Cookie 설정
-        cookiefile_path = os.path.join(os.getcwd(), 'cookies.txt')
-        is_valid_cookie_file = False
-        
-        if os.path.exists(cookiefile_path):
-            try:
-                with open(cookiefile_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read(512)
-                    if "# Netscape" in content or "\t" in content:
-                        is_valid_cookie_file = True
-            except Exception:
-                pass
-
-        if is_valid_cookie_file:
+        system = platform.system()
+        if system == "Linux":
+            cookiefile_path = os.path.join(os.getcwd(), 'cookies.txt')
             ydl_opts['cookiefile'] = cookiefile_path
-            logger.info(f"Using valid cookie file: {cookiefile_path}")
-        else:
-            # 브라우저에서 쿠키 추출 (사용자 성공 사례 기반)
-            try:
-                ydl_opts['cookiesfrombrowser'] = ('chrome',) 
-                logger.info("Setting cookiesfrombrowser to chrome...")
-            except Exception as e:
-                logger.warning(f"Failed to set cookiesfrombrowser: {e}")
                 
         
-        # 포맷 설정 (사용자 성공 사례 기반: bestvideo+bestaudio/best)
         if quality == "best":
-            ydl_opts['format'] = 'bestvideo+bestaudio/best'
+            ydl_opts['format'] = 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=webm][vcodec^=vp9]+bestaudio[ext=webm]/best'
         elif quality == "good":            
-            ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'
+            ydl_opts['format'] = 'bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][vcodec^=avc1][height<=1080]/best'
         elif quality == "low":
-            ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
+            ydl_opts['format'] = 'bestvideo[ext=mp4][vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][vcodec^=avc1][height<=720]/best'
 
         ydl_opts['outtmpl'] = download_folder + '/%(title)s.f%(format_id)s.%(ext)s'
 
@@ -127,14 +105,8 @@ class YoutubeDownloader:
         if len(filename_collector.filenames) <= 0:
             raise Exception("Cannot download " + url)
         
-        target_file = filename_collector.filenames[0]
-        if not os.path.exists(target_file):
-            # Check for partial files to provide better error message
-            if os.path.exists(target_file + ".part"):
-                raise Exception(f"Download was interrupted. Only .part file exists: {target_file}")
-            raise Exception(f"Download failed. File not found: {target_file}")
-            
-        valid_path = self.validate_path(target_file)
+        
+        valid_path = self.validate_path(filename_collector.filenames[0])
         return valid_path
                 
 

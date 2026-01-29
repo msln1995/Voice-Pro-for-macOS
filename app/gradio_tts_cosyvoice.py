@@ -44,23 +44,17 @@ class GradioCosyVoice:
     
     def gradio_tts_dubbing_single(self, dubbing_text:str, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format: str):
         if not (dubbing_text and dubbing_text.strip()):
-            gr.Warning(i18n("Input error: Please provide text to dub."))
+            message = i18n("Input error")
+            gr.Warning(message)
             return None, None           
-
-        if celeb_audio is None:
-            gr.Warning(i18n("Input error: Please select or upload a reference audio."))
-            return None, None
 
         input_text = dubbing_text
         logger.debug(f"[gradio_tts_cosyvoice.py] gradio_tts_dubbing_single - input_text: {input_text}")    
         
         try:
             dubbing_file = os.path.join(path_dubbing_folder(), path_new_filename(f".{audio_format}"))
-            success = self.tts.infer_single(input_text.strip(), dubbing_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
-            if success:
-                return dubbing_file, dubbing_file
-            else:
-                return None, None
+            self.tts.infer_single(input_text.strip(), dubbing_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
+            return dubbing_file, dubbing_file
         except Exception as e:
             logger.error(f"[gradio_tts_cosyvoice.py] gradio_tts_dubbing_single - error: {e}")
             gr.Warning(f'{e}')

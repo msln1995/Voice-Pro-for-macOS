@@ -1,7 +1,6 @@
 
 import json
 import asyncio
-import gradio as gr
 
 from src.config import UserConfig
 from app.abus_downloader import *
@@ -116,12 +115,6 @@ class GradioGulliver:
             self.fm = FileManager()           
             if self._upload(file_obj, mic_file, youtube_url, video_quality, audio_format) == False:
                 return None, None, None
-            
-            source_file = self.source_file
-            if not source_file or not os.path.exists(source_file):
-                logger.error(f"[gradio_gulliver.py] source_file not found: {source_file}")
-                gr.Warning("Source file not found or download failed.")
-                return None, None, None
                             
             source_audio = self.fm.get_split("Source.audio")           
             if(self.has_video and ffmpeg_browser_compatible(self.source_file)):
@@ -178,11 +171,6 @@ class GradioGulliver:
         
         try:                          
             source_audio = self.fm.get_split("Source.audio")
-            if not source_audio or not os.path.exists(source_audio):
-                logger.error(f"[gradio_gulliver.py] gradio_whisper - Source audio not found")
-                gr.Warning("Source audio not found. Please upload a file first.")
-                return None, None, None, None
-
             denoise_inst_path, denoise_vocal_path = self._denoise(source_audio, denoise_level)
             input_path = denoise_vocal_path if os.path.exists(denoise_vocal_path) else source_audio
 
@@ -205,7 +193,7 @@ class GradioGulliver:
             else:
                 return None, source_audio, srt_string, self.fm.get_all_files()
         except Exception as e:
-            logger.error(f"[gradio_gulliver.py] gradio_whisper - Error transcribing file: {e}")
+            logger.error(f"[gradio_gulliver.py] gradio_upload_source - Error transcribing file: {e}")
             gr.Warning(f'{e}')
             return None, None, None, None    
 
@@ -257,7 +245,6 @@ class GradioGulliver:
                         source_lang, transcription_text, target_lang):
         if len(transcription_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_translate - no actions")
-            gr.Warning(i18n("No text to process"))
             return None, None, None, self.fm.get_all_files() 
         
         self.user_config.set("translate_source_language", source_lang)            
@@ -345,7 +332,6 @@ class GradioGulliver:
         
         if len(translation_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_edge_dubbing - no actions")
-            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
         self.user_config.set("edge_tts_pitch", semitones)     
@@ -393,11 +379,6 @@ class GradioGulliver:
             # Mix
             mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{target_language}")            
             denoise_inst_path, _ = self._denoise(source_audio_file, 1)
-            
-            if not denoise_inst_path or not os.path.exists(denoise_inst_path):
-                logger.warning(f"Denoised instrumental not found: {denoise_inst_path}")
-                raise FileNotFoundError(f"Instrumental track separation failed for: {source_audio_file}")
-                
             ffmpeg_mix_audio(aidub_audio_file, denoise_inst_path, mixed_audio_file, 0, 0, audio_format)
                                 
             if self.has_video:
@@ -438,11 +419,6 @@ class GradioGulliver:
             # Mix
             mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{target_language}")            
             denoise_inst_path, _ = self._denoise(source_audio_file, 1)
-            
-            if not denoise_inst_path or not os.path.exists(denoise_inst_path):
-                logger.warning(f"Denoised instrumental not found: {denoise_inst_path}")
-                raise FileNotFoundError(f"Instrumental track separation failed for: {source_audio_file}")
-                
             ffmpeg_mix_audio(aidub_audio_file, denoise_inst_path, mixed_audio_file, 0, 0, audio_format)
                                 
             if self.has_video:
@@ -481,7 +457,6 @@ class GradioGulliver:
         
         if len(translation_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_f5_dubbing_single - no actions")
-            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
             
@@ -495,12 +470,11 @@ class GradioGulliver:
         aidub_video_file = None
         mixed_audio_file = None                
 
-        # 注意：infer_single 内部会自动检测字幕格式
-        # 如果是字幕格式，会调用 srt_to_voice 按时间轴生成
-        # 如果是纯文本，会调用 text_to_voice 生成
-        text_to_process = self._read_file(translation_file) if translation_file else translation_text
-        if text_to_process:
-            aidub_video_file, mixed_audio_file = self._f5_tts_single(text_to_process, 
+        if translation_file:
+            aidub_video_file, mixed_audio_file = self._f5_tts_single(self._read_file(translation_file), 
+                                                celeb_name, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
+        elif translation_text:
+            aidub_video_file, mixed_audio_file = self._f5_tts_single(translation_text, 
                                                 celeb_name, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
 
         output_video_path = (aidub_video_file, translation_file) if aidub_video_file and translation_file else aidub_video_file
@@ -517,22 +491,12 @@ class GradioGulliver:
         try:
             # F5-TTS
             source_audio_file = self.fm.get_split("Source.audio")           
-            if not source_audio_file or not os.path.exists(source_audio_file):
-                raise FileNotFoundError(f"Source audio file not found: {source_audio_file}")
-                
             aidub_audio_file = path_add_postfix(source_audio_file, f"_{celeb_name}")                               
-            # 注意：不要对 text 使用 strip()，因为如果是字幕格式，会破坏其结构
-            # infer_single 内部会自动检测格式并处理
-            self.f5_tts.infer_single(text, aidub_audio_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
+            self.f5_tts.infer_single(text.strip(), aidub_audio_file, celeb_audio, celeb_transcript, model_choice, speed_factor, audio_format)
             
             # Mix
             mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{celeb_name}")            
             denoise_inst_path, _ = self._denoise(source_audio_file, 1)
-            
-            if not denoise_inst_path or not os.path.exists(denoise_inst_path):
-                logger.warning(f"Denoised instrumental not found, using silence/original for mixing.")
-                # Fallback or silent
-            
             ffmpeg_mix_audio(aidub_audio_file, denoise_inst_path, mixed_audio_file, 0, 0, audio_format)
             self.fm.set_dubbing(f'{celeb_name}.audio', aidub_audio_file)
                                 
@@ -561,8 +525,7 @@ class GradioGulliver:
                         celeb_name, celeb_audio, celeb_transcript, 
                         mode_choice, speed_factor, audio_format: str):
         if len(translation_text) < 1:
-            logger.warning(f"[gradio_gulliver.py] gradio_cosy_dubbing - no actions")
-            gr.Warning(i18n("No text to process"))
+            logger.warning(f"[gradio_gulliver.py] gradio_f5_dubbing_single - no actions")
             return None, None, self.fm.get_all_files() 
         
             
@@ -576,12 +539,11 @@ class GradioGulliver:
         aidub_video_file = None
         mixed_audio_file = None   
                 
-        # 注意：infer_single 内部会自动检测字幕格式
-        # 如果是字幕格式，会调用 srt_to_voice 按时间轴生成
-        # 如果是纯文本，会调用 text_to_voice 生成
-        text_to_process = self._read_file(translation_file) if translation_file else translation_text
-        if text_to_process:
-            aidub_video_file, mixed_audio_file = self._cosy_tts_single(text_to_process, 
+        if translation_file:
+            aidub_video_file, mixed_audio_file = self._cosy_tts_single(self._read_file(translation_file), 
+                                                celeb_name, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
+        elif translation_text:
+            aidub_video_file, mixed_audio_file = self._cosy_tts_single(translation_text, 
                                                 celeb_name, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
 
         output_video_path = (aidub_video_file, translation_file) if aidub_video_file and translation_file else aidub_video_file
@@ -599,18 +561,11 @@ class GradioGulliver:
             # F5-TTS
             source_audio_file = self.fm.get_split("Source.audio")           
             aidub_audio_file = path_add_postfix(source_audio_file, f"_{celeb_name}")                               
-            # 注意：不要对 text 使用 strip()，因为如果是字幕格式，会破坏其结构
-            # infer_single 内部会自动检测格式并处理
-            self.cosy_tts.infer_single(text, aidub_audio_file, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
+            self.cosy_tts.infer_single(text.strip(), aidub_audio_file, celeb_audio, celeb_transcript, mode_choice, speed_factor, audio_format)
             
             # Mix
             mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{celeb_name}")            
             denoise_inst_path, _ = self._denoise(source_audio_file, 1)
-            
-            if not denoise_inst_path or not os.path.exists(denoise_inst_path):
-                logger.warning(f"Denoised instrumental not found: {denoise_inst_path}")
-                raise FileNotFoundError(f"Instrumental track separation failed")
-
             ffmpeg_mix_audio(aidub_audio_file, denoise_inst_path, mixed_audio_file, 0, 0, audio_format)
             self.fm.set_dubbing(f'{celeb_name}.audio', aidub_audio_file)
                                 
@@ -645,7 +600,6 @@ class GradioGulliver:
         
         if len(translation_text) < 1:
             logger.warning(f"[gradio_gulliver.py] gradio_kokoro_dubbing - no actions")
-            gr.Warning(i18n("No text to process"))
             return None, None, self.fm.get_all_files() 
         
         # self.user_config.set("edge_tts_rate", speed_factor)  

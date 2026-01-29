@@ -6,11 +6,10 @@ from typing import List, Optional
 from lingua import LanguageDetectorBuilder
 
 class AbusSpacy:
-    MAX_MERGE_GAP_MS = 500
-    MAX_GROUP_CHARS = 250
+    MAX_MERGE_GAP_MS = 1000
     SENTENCE_ENDINGS = {'.', '!', '?', '。', '！', '？', '…'}
     NON_SPACING_LANGUAGES = {'ja', 'zh', 'th', 'km', 'lo'}
-    MIN_DURATION_MS = 500
+    MIN_DURATION_MS = 1000
     
     _nlp_models = {}
     detector = LanguageDetectorBuilder.from_all_languages().build()
@@ -101,31 +100,13 @@ class AbusSpacy:
     def split_into_sentences(cls, text: str, lang: str, model_size: str = 'sm') -> List[str]:
         if len(text) < 10:
             return [text]
-            
-        sentences = []
         try:
             nlp = cls.get_nlp(lang, model_size)
             doc = nlp(text)
             sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+            return sentences if sentences else [text]
         except Exception:
-            sentences = re.split(r'(?<=[.!?。！？])\s+', text.strip())
-            
-        if not sentences:
-            sentences = [text]
-            
-        # Post-process to split very long sentences by comma if needed
-        final_sentences = []
-        MAX_SENTENCE_LENGTH = 200
-        
-        for sent in sentences:
-            if len(sent) > MAX_SENTENCE_LENGTH:
-                # Split by comma
-                parts = re.split(r'(?<=[,，])\s*', sent)
-                final_sentences.extend([p.strip() for p in parts if p.strip()])
-            else:
-                final_sentences.append(sent)
-                
-        return final_sentences
+            return re.split(r'(?<=[.!?。！？])\s+', text.strip())
 
     @classmethod
     def is_complete_sentence(cls, text: str, lang: str) -> bool:
@@ -144,39 +125,19 @@ class AbusSpacy:
     def merge_and_split_events(cls, subs, lang: Optional[str] = None, model_size: str = 'sm') -> List[pysubs2.SSAEvent]:
         if not subs:
             return []
-            
-        if not lang:
-            # Sample up to 10 lines or 1000 chars to detect language
-            sample_text = ""
-            count = 0
-            for e in subs:
-                if e.plaintext.strip():
-                    sample_text += e.plaintext + " "
-                    count += 1
-                    if count >= 10 or len(sample_text) > 1000:
-                        break
-            lang = cls.detect_language(sample_text)
+        lang = lang or cls.detect_language(next((e.plaintext for e in subs if e.plaintext.strip()), ''))
         
         events = []
         current_group = []
-        current_group_chars = 0
-        
         for event in subs:
             text = cls.normalize_text(event.plaintext, lang)
             if not text:
                 continue
-                
-            text_len = len(text)
-            
             if (current_group and 
-                (event.start - current_group[-1].end > cls.MAX_MERGE_GAP_MS or 
-                 current_group_chars + text_len > cls.MAX_GROUP_CHARS)):
+                event.start - current_group[-1].end > cls.MAX_MERGE_GAP_MS):
                 events.extend(cls._process_group(current_group, lang, model_size))
                 current_group = []
-                current_group_chars = 0
-                
             current_group.append(event)
-            current_group_chars += text_len
         
         if current_group:
             events.extend(cls._process_group(current_group, lang, model_size))
@@ -186,11 +147,7 @@ class AbusSpacy:
     def _process_group(cls, events: List[pysubs2.SSAEvent], lang: str, model_size: str) -> List[pysubs2.SSAEvent]:
         if not events:
             return []
-            
-        original_starts = [e.start for e in events if e.plaintext.strip()]
-        original_ends = [e.end for e in events if e.plaintext.strip()]
         full_text = " ".join(cls.normalize_text(e.plaintext, lang) for e in events if e.plaintext.strip())
-        
         sentences = cls.split_into_sentences(full_text, lang, model_size)
         
         merged_sentences = []
@@ -205,70 +162,52 @@ class AbusSpacy:
         if current:
             merged_sentences.append(current)
         
-        total_duration = original_ends[-1] - original_starts[0]
+        event_starts = [e.start for e in events if e.plaintext.strip()]
+        event_ends = [e.end for e in events if e.plaintext.strip()]
+        total_duration = event_ends[-1] - event_starts[0]
         total_chars = len(full_text)
         
         result = []
-        last_end = original_starts[0]
+        last_end = event_starts[0]
         
         for sent_idx, sent in enumerate(merged_sentences):
             if not cls.is_complete_sentence(sent, lang):
                 sent = cls.complete_sentence(sent, lang)
             
-            sent_start = last_end
+            sent_start = last_end if sent_idx > 0 else event_starts[0]
             sent_duration = max(cls.MIN_DURATION_MS, int(total_duration * len(sent) / total_chars))
             sent_end = sent_start + sent_duration
             
-            # 边界修正：如果是第一句
-            if sent_idx == 0:
-                sent_start = original_starts[0]
-                sent_end = sent_start + sent_duration
+            for i, (e_start, e_end) in enumerate(zip(event_starts, event_ends)):
+                if sent_start >= e_start and sent_start < e_end:
+                    sent_end = min(sent_end, event_ends[-1])
+                    break
+                elif sent_start < e_start and i > 0:
+                    sent_start = e_start
+                    sent_end = sent_start + sent_duration
+                    break
             
-            # 如果是最后一句
-            if sent_idx == len(merged_sentences) - 1:
-                sent_end = original_ends[-1]
-            
-            # 防止重叠和无效时长
-            if sent_end <= sent_start:
+            sent_end = min(sent_end, event_ends[-1])
+            if sent_end - sent_start < cls.MIN_DURATION_MS:
                 sent_end = sent_start + cls.MIN_DURATION_MS
-                
+                if sent_end > event_ends[-1]:
+                    sent_start = event_ends[-1] - cls.MIN_DURATION_MS
+                    sent_end = event_ends[-1]
+            
             result.append(pysubs2.SSAEvent(start=sent_start, end=sent_end, text=sent))
             last_end = sent_end
         
         return result
 
     @classmethod
-    def process_subtitle_for_tts(cls, subtitle_file: str, output_file: str, lang: Optional[str] = None, model_size: str = 'lg', enable_merge: bool = True):
+    def process_subtitle_for_tts(cls, subtitle_file: str, output_file: str, lang: Optional[str] = None, model_size: str = 'lg'):
         try:
             subs = pysubs2.load(subtitle_file, encoding="utf-8")
-            
-            if enable_merge:
-                processed = cls.merge_and_split_events(subs, lang, model_size)
-            else:
-                # 只做简单的清洗，不合并
-                if not lang:
-                    sample_text = ""
-                    count = 0
-                    for e in subs:
-                        if e.plaintext.strip():
-                            sample_text += e.plaintext + " "
-                            count += 1
-                            if count >= 10 or len(sample_text) > 1000:
-                                break
-                    lang = cls.detect_language(sample_text)
-                
-                processed = []
-                for event in subs:
-                    text = cls.normalize_text(event.plaintext, lang)
-                    if not text:
-                        continue
-                    # 保持原始时间戳和文本
-                    processed.append(pysubs2.SSAEvent(start=event.start, end=event.end, text=text))
-
+            processed = cls.merge_and_split_events(subs, lang, model_size)
             new_subs = pysubs2.SSAFile()
             new_subs.events = processed
             new_subs.save(output_file)
-            print(f"Processed {len(subs)} events into {len(processed)} events (merge={enable_merge})")
+            print(f"Processed {len(subs)} events into {len(processed)} events with model_size={model_size}")
             return True
         except Exception as e:
             print(f"Error: {e}")

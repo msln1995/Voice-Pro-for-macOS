@@ -4,6 +4,9 @@ import os
 # 必须在导入任何 torch 相关库之前设置此环境变量
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
+# 解决开启代理时无法访问 localhost 的问题
+os.environ["no_proxy"] = "localhost, 127.0.0.1, ::1"
+
 import sys
 from pathlib import Path
 

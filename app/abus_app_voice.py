@@ -113,32 +113,15 @@ def create_ui(user_config: UserConfig):
         gradio_interface.load(None, None, None, js=f"() => {{{js}}}")
                     
 
-    # 强制不使用代理访问本地地址，解决 Gradio 启动校验失败
-    os.environ["no_proxy"] = "localhost,127.0.0.1,0.0.0.0" + ("," + os.environ.get("no_proxy", "") if os.environ.get("no_proxy") else "")
-    
-    # 启用 MPS 算子回退机制，解决 Apple Silicon 上的兼容性报错
-    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-
     if system == "Windows":
         gradio_interface.launch(
             share=False,
-            server_name="127.0.0.1", 
+            server_name=None, 
             server_port=7870,
             inbrowser=True
         )
     elif system == "Linux" or system == "Darwin":  # Linux or macOS
-        try:
-            gradio_interface.launch(
-                server_name="127.0.0.1",
-                inbrowser=True
-            )
-        except ValueError:
-            # 如果 127.0.0.1 还是不行（极端代理环境），尝试开启 share 或使用 0.0.0.0
-            print("Warning: Localhost access failed, trying with 0.0.0.0...")
-            gradio_interface.launch(
-                server_name="0.0.0.0",
-                inbrowser=True
-            )
+        gradio_interface.launch()
     else:
         print(f"Unsupported systems: {system}")
 

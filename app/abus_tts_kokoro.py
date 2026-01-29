@@ -24,18 +24,13 @@ from app.abus_audio import *
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
 
-from app.abus_device import *
-
 import structlog
 logger = structlog.get_logger()
 
 
 class KokoroTTS:
     def __init__(self):      
-        self.set_environment()
-        self.pipelines = {}  # 缓存按语言代码初始化的 pipeline
-        self.device = AbusDevice.get_device()
-        logger.debug(f"[abus_tts_kokoro.py] Initialized with device: {self.device}")
+        self.set_environment()        
        
        
     @staticmethod
@@ -80,18 +75,16 @@ class KokoroTTS:
             logger.warning(f"[abus_tts_kokoro.py] request_tts - error: no line")
             return False
         
-        # 使用缓存的 pipeline，避免重复初始化
-        lang_code = kokoro_voice.lang_code
-        if lang_code not in self.pipelines:
-            try:
-                # KPipeline 会自动使用可用设备，但我们可以显式传入
-                self.pipelines[lang_code] = KPipeline(lang_code=lang_code, device=self.device)
-                logger.debug(f"[abus_tts_kokoro.py] Initialized new KPipeline for {lang_code} on {self.device}")
-            except Exception as e:
-                logger.error(f"[abus_tts_kokoro.py] request_tts - Failed to initialize KPipeline for {lang_code}: {e}")
-                return False
+        # logger.debug(f'[abus_tts_kokoro.py] request_tts - line = {line}, kokoro_voice = {kokoro_voice}')
+        
+        try:
+            pipeline = KPipeline(lang_code=kokoro_voice.lang_code)
+        except Exception as e:
+            logger.error(f"[abus_tts_kokoro.py] request_tts - Failed to initialize KPipeline: {e}")
+            return False
                 
-        pipeline = self.pipelines[lang_code]
+        # pipeline = KPipeline(lang_code=kokoro_voice.lang_code)
+        # logger.debug(f'[abus_tts_kokoro.py] request_tts - pipeline = {pipeline}')
         
         generator = pipeline(
             line, 
@@ -100,10 +93,17 @@ class KokoroTTS:
             split_pattern=None
         )
         
+        # logger.debug(f'[abus_tts_kokoro.py] request_tts - generator = {generator}')
+        
         for i, (gs, ps, audio) in enumerate(generator):
+            # print(i)  # i => index
+            # print(gs) # gs => graphemes/text
+            # print(ps) # ps => phonemes
             sf.write(output_voice_file, audio, 24000)
             break
                 
+        # logger.debug(f'[abus_tts_kokoro.py] request_tts - output_voice_file = {output_voice_file}')
+        
         trimed_voice_file = path_add_postfix(output_voice_file, "_trimed")
         AbusAudio.trim_silence_file(output_voice_file, trimed_voice_file)
         
@@ -133,38 +133,30 @@ class KokoroTTS:
         combined_audio = AudioSegment.empty()
         for i in progress.tqdm(range(len(subs)), desc='Generating...'):
             line = subs[i]
+            next_line = subs[i+1] if i < len(subs)-1 else None
             
-            # 1. 确定目标时长
-            target_duration = line.end - line.start
-            if target_duration <= 0:
-                continue
+            if i == 0:
+                silence = AudioSegment.silent(duration=line.start)
+                combined_audio += silence   
 
-            # 2. 生成原始音频段落
-            raw_segment_file = os.path.join(segments_folder, f'raw_{i+1}.{audio_format}')
-            tts_result = self.request_tts(line.text, raw_segment_file, kokoro_voice, speed_factor, audio_format)
+            tts_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
+            tts_result = self.request_tts(line.text, tts_segment_file, kokoro_voice, speed_factor, audio_format)
 
             if tts_result == False:
+                if next_line:
+                    silence = AudioSegment.silent(duration=next_line.start-line.start)
+                    combined_audio += silence
                 continue        
             
-            # 3. 适配时长 (变速不变调)
-            fitted_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
-            AbusAudio.fit_to_duration_file(raw_segment_file, fitted_segment_file, target_duration)
-            
-            segment_audio = AudioSegment.from_file(fitted_segment_file)
-            
-            # 4. 绝对定位拼接
-            if len(combined_audio) < line.start:
-                silence_gap = line.start - len(combined_audio)
-                combined_audio += AudioSegment.silent(duration=silence_gap)
-            
-            # 5. 拼接与截断
-            if len(segment_audio) > target_duration:
-                segment_audio = segment_audio[:target_duration]
-                
-            combined_audio += segment_audio
+            combined_audio += AudioSegment.from_file(tts_segment_file)
 
-            # 清理临时文件
-            cmd_delete_file(raw_segment_file)
+            if next_line and len(combined_audio) < next_line.start:
+                silence_length = next_line.start - len(combined_audio)
+                silence = AudioSegment.silent(duration=silence_length)
+                combined_audio += silence
+            elif next_line:
+                next_line.start = len(combined_audio)
+                next_line.end = next_line.start + (next_line.end - next_line.start)
                 
         combined_audio.export(output_file, format=audio_format)                 
         cmd_delete_file(tts_subtitle_file)    

@@ -78,40 +78,30 @@ class EdgeTTS:
         combined_audio = AudioSegment.empty()
         for i in progress.tqdm(range(len(subs)), desc='Generating...'):
             line = subs[i]
+            next_line = subs[i+1] if i < len(subs)-1 else None
             
-            # 1. 确定目标时长
-            target_duration = line.end - line.start
-            if target_duration <= 0:
-                continue
+            if i == 0:
+                silence = AudioSegment.silent(duration=line.start)
+                combined_audio += silence   
 
-            # 2. 生成原始音频段落
-            raw_segment_file = os.path.join(segments_folder, f'raw_{i+1}.{audio_format}')
-            tts_result = self.request_tts(line.text, raw_segment_file, voice_name, semitones, speed_factor, volume_factor, audio_format)
+            tts_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
+            tts_result = self.request_tts(line.text, tts_segment_file, voice_name, semitones, speed_factor, volume_factor, audio_format)
 
             if tts_result == False:
+                if next_line:
+                    silence = AudioSegment.silent(duration=next_line.start-line.start)
+                    combined_audio += silence
                 continue        
             
-            # 3. 适配时长 (变速不变调)
-            fitted_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
-            AbusAudio.fit_to_duration_file(raw_segment_file, fitted_segment_file, target_duration)
-            
-            segment_audio = AudioSegment.from_file(fitted_segment_file)
-            
-            # 4. 绝对定位拼接 (处理开头和中间的静音)
-            if len(combined_audio) < line.start:
-                silence_gap = line.start - len(combined_audio)
-                combined_audio += AudioSegment.silent(duration=silence_gap)
-            
-            # 5. 拼接 (强制截断或叠加，防止超出原本定义的结束点太多)
-            # 如果 segment_audio 还是比 target_duration 长（通常 fit_to_duration_file 已经处理了），强制截断以防万一
-            if len(segment_audio) > target_duration:
-                segment_audio = segment_audio[:target_duration]
-                
-            combined_audio += segment_audio
+            combined_audio += AudioSegment.from_file(tts_segment_file)
 
-            # 清理临时文件
-            cmd_delete_file(raw_segment_file)
-            # fitted_segment_file 可以保留在 segments_folder 供 debug 或缓存（按原本逻辑也是留着的）
+            if next_line and len(combined_audio) < next_line.start:
+                silence_length = next_line.start - len(combined_audio)
+                silence = AudioSegment.silent(duration=silence_length)
+                combined_audio += silence
+            elif next_line:
+                next_line.start = len(combined_audio)
+                next_line.end = next_line.start + (next_line.end - next_line.start)
                 
         combined_audio.export(output_file, format=audio_format)       
         cmd_delete_file(tts_subtitle_file)    
