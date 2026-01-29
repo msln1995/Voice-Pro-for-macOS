@@ -42,6 +42,35 @@ try:
 except ImportError:
     USING_SPACES = False
 
+def get_local_path(url_or_path):
+    if not url_or_path.startswith("hf://"):
+        return url_or_path
+        
+    # Handle hf:// paths
+    # Example: hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors
+    parts = url_or_path.replace("hf://", "").split("/")
+    
+    # Check 1: ckpts/filename (flat)
+    filename = parts[-1]
+    local_flat = os.path.join("ckpts", filename)
+    if os.path.exists(local_flat):
+        logger.info(f"Found local model (flat): {local_flat}")
+        return local_flat
+
+    # Check 2: ckpts/Repo/Path/file (structure)
+    local_struct = os.path.join("ckpts", *parts)
+    if os.path.exists(local_struct):
+        logger.info(f"Found local model (structured): {local_struct}")
+        return local_struct
+        
+    # Check 3: model/f5-tts/filename (flat)
+    local_model_flat = os.path.join("model", "f5-tts", filename)
+    if os.path.exists(local_model_flat):
+        logger.info(f"Found local model (model flat): {local_model_flat}")
+        return local_model_flat
+        
+    return str(cached_path(url_or_path))
+
 def gpu_decorator(func):
     if USING_SPACES:
         return spaces.GPU(func)
@@ -80,8 +109,29 @@ class F5TTS:
     def __init__(self):
         config_path = os.path.join(Path(__file__).resolve().parent, "abus_tts_f5_models.json")
         self.manager = ModelPathManager(config_path)
-        self.vocoder = load_vocoder()
+        self.vocoder = self.load_vocoder_local()
         
+
+    def load_vocoder_local(self):
+        from vocos import Vocos
+        target_vocoder = "charactr/vocos-mel-24khz"
+        
+        # 1. Try ckpts/vocos-mel-24khz
+        local_path = os.path.join("ckpts", "vocos-mel-24khz")
+        if os.path.exists(local_path):
+            logger.info(f"Found local vocoder: {local_path}")
+            return Vocos.from_pretrained(local_path)
+            
+        # 2. Try ckpts/charactr/vocos-mel-24khz
+        local_path_full = os.path.join("ckpts", "charactr", "vocos-mel-24khz")
+        if os.path.exists(local_path_full):
+            logger.info(f"Found local vocoder: {local_path_full}")
+            return Vocos.from_pretrained(local_path_full)
+            
+        # 3. Fallback to standard loading (may download)
+        logger.info(f"Local vocoder not found, using default: {target_vocoder}")
+        return load_vocoder()
+
 
 
     def available_models(self):
@@ -94,15 +144,15 @@ class F5TTS:
         model_paths = self.manager.get_model_paths(model_name)
         default_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
         
-        vocab_path = str(cached_path(model_paths['vocab_path'])) if 'vocab_path' in model_paths else ""
-        ckpt_path = str(cached_path(model_paths['model_path'])) if 'model_path' in model_paths else ""
+        vocab_path = get_local_path(model_paths['vocab_path']) if 'vocab_path' in model_paths else ""
+        ckpt_path = get_local_path(model_paths['model_path']) if 'model_path' in model_paths else ""
         model_cfg = model_paths['config'] if 'config' in model_paths else default_cfg
             
         return load_model(DiT, model_cfg, ckpt_path, vocab_file=vocab_path)
 
 
     def load_e2tts(self):
-        ckpt_path = str(cached_path("hf://SWivid/E2-TTS/E2TTS_Base/model_1200000.safetensors"))
+        ckpt_path = get_local_path("hf://SWivid/E2-TTS/E2TTS_Base/model_1200000.safetensors")
         model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4, text_mask_padding=False, pe_attn_head=1)
         return load_model(UNetT, model_cfg, ckpt_path)
     
