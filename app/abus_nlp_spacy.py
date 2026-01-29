@@ -7,6 +7,7 @@ from lingua import LanguageDetectorBuilder
 
 class AbusSpacy:
     MAX_MERGE_GAP_MS = 500
+    MAX_GROUP_CHARS = 1000
     SENTENCE_ENDINGS = {'.', '!', '?', '。', '！', '？', '…'}
     NON_SPACING_LANGUAGES = {'ja', 'zh', 'th', 'km', 'lo'}
     MIN_DURATION_MS = 500
@@ -100,13 +101,31 @@ class AbusSpacy:
     def split_into_sentences(cls, text: str, lang: str, model_size: str = 'sm') -> List[str]:
         if len(text) < 10:
             return [text]
+            
+        sentences = []
         try:
             nlp = cls.get_nlp(lang, model_size)
             doc = nlp(text)
             sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
-            return sentences if sentences else [text]
         except Exception:
-            return re.split(r'(?<=[.!?。！？])\s+', text.strip())
+            sentences = re.split(r'(?<=[.!?。！？])\s+', text.strip())
+            
+        if not sentences:
+            sentences = [text]
+            
+        # Post-process to split very long sentences by comma if needed
+        final_sentences = []
+        MAX_SENTENCE_LENGTH = 200
+        
+        for sent in sentences:
+            if len(sent) > MAX_SENTENCE_LENGTH:
+                # Split by comma
+                parts = re.split(r'(?<=[,，])\s*', sent)
+                final_sentences.extend([p.strip() for p in parts if p.strip()])
+            else:
+                final_sentences.append(sent)
+                
+        return final_sentences
 
     @classmethod
     def is_complete_sentence(cls, text: str, lang: str) -> bool:
@@ -129,15 +148,24 @@ class AbusSpacy:
         
         events = []
         current_group = []
+        current_group_chars = 0
+        
         for event in subs:
             text = cls.normalize_text(event.plaintext, lang)
             if not text:
                 continue
+                
+            text_len = len(text)
+            
             if (current_group and 
-                event.start - current_group[-1].end > cls.MAX_MERGE_GAP_MS):
+                (event.start - current_group[-1].end > cls.MAX_MERGE_GAP_MS or 
+                 current_group_chars + text_len > cls.MAX_GROUP_CHARS)):
                 events.extend(cls._process_group(current_group, lang, model_size))
                 current_group = []
+                current_group_chars = 0
+                
             current_group.append(event)
+            current_group_chars += text_len
         
         if current_group:
             events.extend(cls._process_group(current_group, lang, model_size))
