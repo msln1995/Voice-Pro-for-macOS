@@ -240,20 +240,44 @@ class F5TTS:
             line = subs[i]
             next_line = subs[i+1] if i < len(subs)-1 else None
             
+            # Calculate target duration in seconds
+            target_duration_ms = line.end - line.start
+            target_duration_sec = target_duration_ms / 1000.0
+            
             if i == 0:
                 silence = AudioSegment.silent(duration=line.start)
                 combined_audio += silence   
 
             tts_segment_file = os.path.join(segments_folder, f'tts_{i+1}.{audio_format}')
+            
+            # First pass generation
             tts_result = self.request_tts(line.text, tts_segment_file, ref_audio, ref_text, speed_factor, audio_format)
 
+            if tts_result:
+                # Check duration and adjust speed if too fast
+                segment = AudioSegment.from_file(tts_segment_file)
+                seg_duration_ms = len(segment)
+                seg_duration_sec = seg_duration_ms / 1000.0
+                
+                # If generated audio is significantly shorter than subtitle slot (e.g. < 70%), 
+                # and we have a minimum speed limit (e.g. 0.6)
+                # We try to slow it down to fit better.
+                if seg_duration_sec < target_duration_sec * 0.7:
+                    new_speed = speed_factor * (seg_duration_sec / (target_duration_sec * 0.9)) # Target 90% of slot
+                    new_speed = max(0.6, new_speed) # Don't go below 0.6
+                    
+                    if new_speed < speed_factor - 0.1: # Only if significant change
+                        logger.info(f"Speed adjustment for line {i+1}: {speed_factor} -> {new_speed:.2f} (Duration: {seg_duration_sec:.2f}s -> Target: {target_duration_sec:.2f}s)")
+                        self.request_tts(line.text, tts_segment_file, ref_audio, ref_text, new_speed, audio_format)
+                        segment = AudioSegment.from_file(tts_segment_file) # Reload
+            
             if tts_result == False:
                 if next_line:
                     silence = AudioSegment.silent(duration=next_line.start-line.start)
                     combined_audio += silence
                 continue        
             
-            combined_audio += AudioSegment.from_file(tts_segment_file)
+            combined_audio += segment
 
             if next_line and len(combined_audio) < next_line.start:
                 silence_length = next_line.start - len(combined_audio)
