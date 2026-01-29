@@ -214,34 +214,22 @@ class F5TTS:
     
 
     def srt_to_voice(self, subtitle_file: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
-        # full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
-        # Direct load without Spacy processing for strict SRT adherence
-        full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
+        tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts", ".srt")
+        AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)
+        full_subs = pysubs2.load(tts_subtitle_file, encoding="utf-8")
         subs = full_subs
-        
-        # Stable segments folder for resume capability
         segments_folder = os.path.join(os.path.dirname(subtitle_file), f"cache_{Path(subtitle_file).stem}_f5")
         os.makedirs(segments_folder, exist_ok=True)
-        logger.info(f"Using segments folder: {segments_folder}")
-        
-        # Results container (index -> AudioSegment)
         results = {}
-        
-        # Queue for passing data from GPU (Producer) to CPU (Consumer)
-        # Item: (index, final_wave, sample_rate, text, target_duration, file_path)
         audio_queue = queue.Queue()
-        
-        # Consumer Worker (CPU Processing)
         def consumer_worker():
             while True:
                 item = audio_queue.get()
                 if item is None:
                     break
-                
                 idx, wave, rate, txt, dur, file_path = item
                 try:
                     if wave is not None:
-                        # New generation
                         seg = self._post_process_audio_segment(wave, rate, txt, dur)
                         if seg and file_path:
                             try:
@@ -250,7 +238,6 @@ class F5TTS:
                                 logger.error(f"Failed to save segment {idx}: {e}")
                         results[idx] = seg
                     elif file_path and os.path.exists(file_path):
-                        # Cache hit
                         try:
                             results[idx] = AudioSegment.from_file(file_path)
                         except Exception as e:
@@ -263,69 +250,42 @@ class F5TTS:
                     results[idx] = None
                 finally:
                     audio_queue.task_done()
-        
-        # Start Consumer Thread
         t = threading.Thread(target=consumer_worker, daemon=True)
         t.start()
-        
-        # Producer Loop (GPU Generation)
         for i in progress.tqdm(range(len(subs)), desc='Generating...'):
             line = subs[i]
             target_duration = line.end - line.start
-            
             if target_duration <= 0:
                 results[i] = None
                 continue
-                
             segment_file = os.path.join(segments_folder, f"seg_{i:04d}.{audio_format}")
-
-            # Check cache
             if os.path.exists(segment_file) and os.path.getsize(segment_file) > 0:
-                # logger.info(f"Skipping line {i} (cached)")
                 audio_queue.put((i, None, None, None, None, segment_file))
                 continue
-
             try:
-                # Generate (GPU)
                 line_text = AbusText.normalize_text(line.text)
                 if len(line_text) < 1:
                     results[i] = None
                     continue
-
                 final_wave, sample_rate = self.generate_audio(line_text, None, ref_audio, ref_text, speed_factor)
-                
-                # Put in Queue for CPU processing
                 audio_queue.put((i, final_wave, sample_rate, line_text, target_duration, segment_file))
-                
             except Exception as e:
                 logger.error(f"Error generating line {i}: {e}")
                 results[i] = None
-                
-        # Wait for consumer
         audio_queue.join()
-        # Stop consumer
         audio_queue.put(None)
         t.join()
-        
-        # Combine Audio
         combined_audio = AudioSegment.empty()
         for i in range(len(subs)):
             line = subs[i]
             next_line = subs[i+1] if i < len(subs)-1 else None
-            
-            # Initial silence
             if i == 0 and line.start > 0:
                 silence = AudioSegment.silent(duration=line.start)
                 combined_audio += silence
-            
-            # Segment audio
             seg = results.get(i)
             if seg:
                 combined_audio += seg
-            
             current_end = len(combined_audio)
-            
-            # Gap to next line
             if next_line:
                 if current_end < next_line.start:
                     silence = AudioSegment.silent(duration=next_line.start - current_end)
@@ -333,24 +293,23 @@ class F5TTS:
                 elif current_end > next_line.start:
                     next_line.start = current_end
                     next_line.end = next_line.start + (next_line.end - next_line.start)
-        
-        combined_audio.export(output_file, format=audio_format)    
+        combined_audio.export(output_file, format=audio_format)
+        cmd_delete_file(tts_subtitle_file)
       
     def srt_to_voice_multi(self, subtitle_file: str, output_file: str, ref_audio1, ref_text1, ref_audio2, ref_text2, speed_factor, audio_format, progress=gr.Progress()):
-        full_subs = pysubs2.load(subtitle_file, encoding="utf-8")
+        tts_subtitle_file = path_add_postfix(subtitle_file, f"-f5-tts", ".srt")
+        AbusSpacy.process_subtitle_for_tts(subtitle_file, tts_subtitle_file)
+        full_subs = pysubs2.load(tts_subtitle_file, encoding="utf-8")
         subs = full_subs
-        
         segments_folder = os.path.join(os.path.dirname(subtitle_file), f"cache_{Path(subtitle_file).stem}_f5")
         os.makedirs(segments_folder, exist_ok=True)
-        
         results = {}
         audio_queue = queue.Queue()
-        
         def consumer_worker():
             while True:
                 item = audio_queue.get()
-                if item is None: break
-                
+                if item is None:
+                    break
                 idx, wave, rate, txt, dur, file_path = item
                 try:
                     if wave is not None:
@@ -373,29 +332,21 @@ class F5TTS:
                     results[idx] = None
                 finally:
                     audio_queue.task_done()
-        
         t = threading.Thread(target=consumer_worker, daemon=True)
         t.start()
-        
         for i in progress.tqdm(range(len(subs)), desc='Generating Multi...'):
             line = subs[i]
             text = line.text
             target_duration = line.end - line.start
-            
             if target_duration <= 0:
                 results[i] = None
                 continue
-                
             segment_file = os.path.join(segments_folder, f"seg_{i:04d}.{audio_format}")
-
             if os.path.exists(segment_file) and os.path.getsize(segment_file) > 0:
                 audio_queue.put((i, None, None, None, None, segment_file))
                 continue
-
-            # Determine speaker
             current_ref_audio = ref_audio1
             current_ref_text = ref_text1
-            
             if '{spk2}' in text:
                 current_ref_audio = ref_audio2
                 current_ref_text = ref_text2
@@ -404,8 +355,6 @@ class F5TTS:
                 current_ref_audio = ref_audio1
                 current_ref_text = ref_text1
                 text = text.replace('{spk1}', '')
-            
-            # Fallback
             if current_ref_audio is None:
                 if ref_audio1 is not None:
                     current_ref_audio = ref_audio1
@@ -414,41 +363,30 @@ class F5TTS:
                     logger.warning(f"No reference audio available for line: {text}")
                     results[i] = None
                     continue
-
             try:
                 line_text = AbusText.normalize_text(text)
                 if len(line_text) < 1:
                     results[i] = None
                     continue
-
                 final_wave, sample_rate = self.generate_audio(line_text, None, current_ref_audio, current_ref_text, speed_factor)
-                
                 audio_queue.put((i, final_wave, sample_rate, line_text, target_duration, segment_file))
-                
             except Exception as e:
                 logger.error(f"Error generating line {i}: {e}")
                 results[i] = None
-                
         audio_queue.join()
         audio_queue.put(None)
         t.join()
-        
-        # Combine Audio
         combined_audio = AudioSegment.empty()
         for i in range(len(subs)):
             line = subs[i]
             next_line = subs[i+1] if i < len(subs)-1 else None
-            
             if i == 0 and line.start > 0:
                 silence = AudioSegment.silent(duration=line.start)
                 combined_audio += silence
-            
             seg = results.get(i)
             if seg:
                 combined_audio += seg
-            
             current_end = len(combined_audio)
-            
             if next_line:
                 if current_end < next_line.start:
                     silence = AudioSegment.silent(duration=next_line.start - current_end)
@@ -456,8 +394,8 @@ class F5TTS:
                 elif current_end > next_line.start:
                     next_line.start = current_end
                     next_line.end = next_line.start + (next_line.end - next_line.start)
-        
         combined_audio.export(output_file, format=audio_format)
+        cmd_delete_file(tts_subtitle_file)
     
     def text_to_voice(self, dubbing_text: str, output_file: str, ref_audio, ref_text, speed_factor, audio_format, progress=gr.Progress()):
         segments_folder = path_tts_segments_folder(output_file)          
