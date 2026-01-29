@@ -415,4 +415,3 @@ class AbusText():
         except Exception as e:
             logger.error(f"Language detection error: {e}")
             return 'English'  # 오류 발생 시 영어로 기본 설정
-
